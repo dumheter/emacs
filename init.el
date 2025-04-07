@@ -14,8 +14,9 @@
 (tool-bar-mode -1)
 (scroll-bar-mode -1)
 (setq inhibit-startup-screen t)
+(setq ring-bell-function 'ignore)
 
-(setq-default intent-tabs-mode nil)
+(setq-default intent-tabs-mode t)
 (setq make-backup-files nil)
 
 (require 'package)
@@ -28,12 +29,50 @@
 
 (unless (package-installed-p 'use-package)
   (package-install 'use-package))
+
 (require 'use-package)
 (setq use-package-always-ensure t)
 
+;; FONT
+(cond
+ ((string-equal system-type "windows-nt")
+  (progn
+    (add-to-list 'default-frame-alist '(font . "Cascadia Mono PL-9"))
+    (set-face-attribute 'default t
+		        :font "Cascadia Mono PL-9"
+			))))
+
+(cond
+ ((string-equal system-type "gnu/linux")
+  (progn
+    (set-face-attribute 'default nil :height 100))))
+
+;; UTF-8 please
+(setq locale-coding-system 'utf-8) ; pretty
+(set-terminal-coding-system 'utf-8) ; pretty
+(set-keyboard-coding-system 'utf-8) ; pretty
+(set-selection-coding-system 'utf-8) ; please
+(prefer-coding-system 'utf-8) ; with sugar on top
+
+;; no more ~ files
+(setq backup-inhibited t)
+(setq auto-save-default nil)
+(setq make-backup-files nil)
+
+;; custom stuff in custom.el
+(setq custom-file (expand-file-name "custom.el" user-emacs-directory))
+(when (file-exists-p custom-file)
+  (load custom-file)
+  )
+
+
 (use-package emacs
   :ensure nil ;; buildin package
-  :bind (("C-a" . smarter-begining-of-line))
+  :bind (
+	 ("C-a" . smarter-begining-of-line)
+	 ("C-+" . text-scale-increase)
+	 ("C--" . text-scale-decrease)
+	 )
   :config
   (defun smarter-begining-of-line ()
     "Move point to first non-whitespace character or beginning of line."
@@ -88,16 +127,16 @@
 (use-package projectile
   :ensure t
   :init
-  (setq projectile-project-search-path '("C:/dev/" "D:/dev/" "G:/dev/" "~/dev/"))
+  (setq projectile-completion-system 'ivy)
+  (setq projectile-enable-caching 'persistent)
+  (setq projectile-cache-file "~/.emacs.d/projectile.cache")
+  ;;(setq projectile-auto-update-cache t) do we want this?
+  (setq projectile-indexing-method 'native)
+  (setq projectile-sort-order 'recently-active)
   :config
   (projectile-mode +1)
   :bind-keymap
   ("C-c p" . projectile-command-map)
-  :custom
-  (projectile-completion-system 'ivy)
-  (projectile-enable-caching t)
-  (projectile-indexing-method 'alien)
-  (projectile-sort-order 'recently-active)
   )
 
 (use-package counsel-projectile
@@ -138,3 +177,10 @@
   (setq lsp-bridge-enable-signature-help t)
   (global-lsp-bridge-mode)
   )
+
+(use-package rg
+  :config
+  (rg-enable-default-bindings)
+  )
+
+(use-package p4)

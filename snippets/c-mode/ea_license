@@ -1,0 +1,6 @@
+# -*- mode: snippet -*-
+# name: ea license
+# key: eal
+# --
+// (c) Electronic Arts Inc.
+$0

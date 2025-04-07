@@ -1,0 +1,8 @@
+custom.el
+auto-save-list/
+elpa/
+projectile-bookmarks.eld
+projectile.cache
+recentf
+tramp
+transient/

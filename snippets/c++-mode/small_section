@@ -1,0 +1,6 @@
+# -*- mode: snippet -*-
+# name: small section
+# key: ssec
+# --
+////////////////////////
+// ${0:title}

@@ -1,0 +1,6 @@
+# -*- mode: snippet -*-
+# name: ea license
+# key: eal
+# --
+// (c) 2023 Electronic Arts Inc.
+$0
