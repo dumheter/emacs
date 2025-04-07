@@ -1,13 +1,22 @@
-;; # Help
+;; # Readme
 ;;
-;; ## Not loading this file
+;; ## Windows Config
+;; Accociate your files with emacsclientw.exe. This will open a new window.
+;; To make it open in the current window, open regedit:
+;;   > HKEY_CLASSES_ROOT\Applications\emacsclientw.exe\shell\open\command
+;; Make sure it says (add --no-wait):
+;;   > "C:\Path\To\emacsclientw.exe" --no-wait "%1"
+;;
+;; ## Help
+;;
+;; ### Not loading this file
 ;; If windows doesnt use .emacs.d default folder, look for what init
 ;; file was used by calling
 ;;   > `describe-variable` user-init-file
 ;; Then load this file from there with
 ;;   > (load "~/.emacs.d/init.el)
 ;;
-;; ## lsp-bridge doesnt work.
+;; ### lsp-bridge doesnt work.
 ;; Search for `App Execution Aliases` and turn off python.
 
 (menu-bar-mode -1)
@@ -84,6 +93,13 @@
 		(beginning-of-line))))
   (hl-line-mode)
   (fset 'yes-or-no-p 'y-or-n-p)
+  )
+
+(use-package server
+  :ensure nil
+  :config
+  (unless (server-running-p)
+	(server-start))
   )
 
 (use-package ivy
