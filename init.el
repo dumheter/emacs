@@ -18,6 +18,7 @@
 
 (setq-default intent-tabs-mode t)
 (setq make-backup-files nil)
+(setq-default tab-width 4)
 
 (require 'package)
 (setq package-archives '(("melpa" . "https://melpa.org/packages/")
@@ -74,13 +75,17 @@
 	 ("C--" . text-scale-decrease)
 	 )
   :config
+  (setq frame-title-format
+      '("%b @ " (:eval (or (abbreviate-file-name (buffer-file-name))
+                          (buffer-name)))))
   (defun smarter-begining-of-line ()
     "Move point to first non-whitespace character or beginning of line."
     (interactive)
     (let ((pt (point)))
       (back-to-indentation)
       (when (eq pt (point))
-	(beginning-of-line))))
+		(beginning-of-line))))
+  (hl-line-mode)
   )
 
 (use-package ivy
@@ -179,8 +184,17 @@
   )
 
 (use-package rg
+  :ensure t
   :config
   (rg-enable-default-bindings)
   )
 
-(use-package p4)
+(use-package p4
+  :ensure t
+  )
+
+(use-package editorconfig
+  :ensure t
+  :config
+  (editorconfig-mode 1)
+  )
