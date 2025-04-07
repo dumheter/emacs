@@ -63,7 +63,6 @@
   (load custom-file)
   )
 
-
 (use-package emacs
   :ensure nil ;; buildin package
   :bind (
@@ -73,7 +72,8 @@
 	 )
   :config
   (setq frame-title-format
-      '("%b @ " (:eval (or (abbreviate-file-name (buffer-file-name))
+		'("%b @ " (:eval (if (buffer-file-name)
+							 (abbreviate-file-name (buffer-file-name))
                           (buffer-name)))))
   (defun smarter-begining-of-line ()
     "Move point to first non-whitespace character or beginning of line."
@@ -99,7 +99,7 @@
 	 ("C-x C-f" . counsel-find-file)
 	 ("C-c f" . counsel-recentf)
 	 ("C-x r" . counsel-rg)
-	 ("M-y" . counsel-yank-pop)
+	 ;;("M-y" . counsel-yank-pop) using killring instead
 	 )
   :config
   (setq counsel-yank-pop-separator "\n--------------------------------\n")
@@ -200,6 +200,20 @@
   )
 
 (use-package clang-format
+  :ensure t
   :bind (("C-c C-f" . clang-format-region)
 		 )
   )
+
+(use-package browse-kill-ring
+  :ensure t
+  :bind (("M-y" . browse-kill-ring)
+		 )
+  )
+
+(use-package clipmon
+  :config
+  (clipmon-mode-start)
+  )
+
+;; clipmon
