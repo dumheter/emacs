@@ -131,7 +131,7 @@
   (setq projectile-enable-caching 'persistent)
   (setq projectile-cache-file "~/.emacs.d/projectile.cache")
   ;;(setq projectile-auto-update-cache t) do we want this?
-  (setq projectile-indexing-method 'native)
+  (setq projectile-indexing-method 'alien)
   (setq projectile-sort-order 'recently-active)
   :config
   (projectile-mode +1)
