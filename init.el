@@ -15,9 +15,11 @@
 (scroll-bar-mode -1)
 (setq inhibit-startup-screen t)
 (setq ring-bell-function 'ignore)
-
+(setq make-backup-files nil) ;; Disable backup files (file~)
+(setq auto-save-default nil) ;; Disable auto-save files (#file#)
+(setq create-lockfiles nil) ;; Disable lockfiles (.#file)
+(setq backup-inhibited t)
 (setq-default intent-tabs-mode t)
-(setq make-backup-files nil)
 (setq-default tab-width 4)
 
 (require 'package)
@@ -34,7 +36,7 @@
 (require 'use-package)
 (setq use-package-always-ensure t)
 
-;; FONT
+;; Font
 (cond
  ((string-equal system-type "windows-nt")
   (progn
@@ -54,11 +56,6 @@
 (set-keyboard-coding-system 'utf-8) ; pretty
 (set-selection-coding-system 'utf-8) ; please
 (prefer-coding-system 'utf-8) ; with sugar on top
-
-;; no more ~ files
-(setq backup-inhibited t)
-(setq auto-save-default nil)
-(setq make-backup-files nil)
 
 ;; custom stuff in custom.el
 (setq custom-file (expand-file-name "custom.el" user-emacs-directory))
@@ -86,6 +83,7 @@
       (when (eq pt (point))
 		(beginning-of-line))))
   (hl-line-mode)
+  (fset 'yes-or-no-p 'y-or-n-p)
   )
 
 (use-package ivy
@@ -105,6 +103,8 @@
 	 )
   :config
   (setq counsel-yank-pop-separator "\n--------------------------------\n")
+  (setq ivy-initial-inputs-alist ;; dont start M-x with ^
+		(assq-delete-all #'counsel-M-x ivy-initial-inputs-alist))
   )
 
 (use-package which-key
@@ -197,4 +197,9 @@
   :ensure t
   :config
   (editorconfig-mode 1)
+  )
+
+(use-package clang-format
+  :bind (("C-c C-f" . clang-format-region)
+		 )
   )
