@@ -78,7 +78,6 @@
   )
 
 (use-package emacs
-  :init
   :ensure nil ;; buildin package
   :bind (
 	 ("C-a" . smarter-begining-of-line)
@@ -89,7 +88,16 @@
 	 ("C-S-<up>" . move-line-up)
 	 ("C-S-<down>" . move-line-down)
 	 ("M-C-SPC" . mark-sexp-at-point)
+	 ("C-c f" . recentf)
 	 )
+  :custom
+  (enable-recursive-minibuffers t)
+  ;; Hide commands in M-x whihc do not work in current mode. Vertico
+  ;; commands are hidden in normal buffers. This setting is usful beyond Vertico.
+  (read-extended-command-predicate #'command-completion-default-include-p)
+  ;; Do now allow the cursor in the minibuffer promp
+  (minibuffer-promt-properties
+   '(read-only t cursor-intagible t face minibuffer-prompt))
   :config
   (setq frame-title-format
 		'("%b @ " (:eval (if (buffer-file-name)
@@ -170,27 +178,6 @@
 	(server-start))
   )
 
-(use-package ivy
-  :ensure t
-  :diminish
-  :config
-  (ivy-mode 1)
-  :bind (("C-s" . 'swiper-isearch)))
-
-(use-package counsel
-  :ensure t
-  :bind (("M-x" . counsel-M-x)
-	 ("C-x C-f" . counsel-find-file)
-	 ("C-c f" . counsel-recentf)
-	 ("C-x r" . counsel-rg)
-	 ;;("M-y" . counsel-yank-pop) using killring instead
-	 )
-  :config
-  (setq counsel-yank-pop-separator "\n--------------------------------\n")
-  (setq ivy-initial-inputs-alist ;; dont start M-x with ^
-		(assq-delete-all #'counsel-M-x ivy-initial-inputs-alist))
-  )
-
 (use-package which-key
   :ensure t
   :init (which-key-mode)
@@ -213,10 +200,131 @@
 	 ("C-c C-<" . 'mc/mark-all-like-this))
   )
 
+;; minibuffer
+(use-package vertico
+  :init
+  (vertico-mode)
+  )
+
+;; Persist history over Emacs restarts. Vertico sorts by history position.
+(use-package savehist
+  :ensure nil
+  :init
+  (savehist-mode)
+  )
+
+;; improve minibuffer with completion style.
+(use-package orderless
+  :custom
+  ;; Configure a custom style dispatcher (see the Consult wiki)
+  ;; (orderless-style-dispatchers '(+orderless-consult-dispatch orderless-affix-dispatch))
+  ;; (orderless-component-separator #'orderless-escapable-split-on-space)
+  (completion-styles '(orderless basic))
+  (completion-category-defaults nil)
+  (completion-category-overrides '((file (style partial-completion))))
+  )
+
+(use-package consult
+  :bind(
+		("C-s" . consult-line)
+		("C-c h" . consult-history)
+        ("C-c k" . consult-kmacro)
+        ("C-c m" . consult-man)
+        ("C-c i" . consult-info)
+		([remap Info-search] . consult-info)
+		;; C-x bindings in `ctl-x-map'
+        ("C-x M-:" . consult-complex-command)     ;; orig. repeat-complex-command
+        ("C-x b" . consult-buffer)                ;; orig. switch-to-buffer
+        ("C-x 4 b" . consult-buffer-other-window) ;; orig. switch-to-buffer-other-window
+        ("C-x 5 b" . consult-buffer-other-frame)  ;; orig. switch-to-buffer-other-frame
+        ("C-x t b" . consult-buffer-other-tab)    ;; orig. switch-to-buffer-other-tab
+        ("C-x r b" . consult-bookmark)            ;; orig. bookmark-jump
+        ("C-x p b" . consult-project-buffer)      ;; orig. project-switch-to-buffer
+		;; Custom M-# bindings for fast register access
+        ("M-#" . consult-register-load)
+        ("M-'" . consult-register-store)          ;; orig. abbrev-prefix-mark (unrelated)
+        ("C-M-#" . consult-register)
+		;; Other custom bindings
+        ("M-y" . consult-yank-pop)                ;; orig. yank-pop
+		;; M-g bindings in `goto-map'
+        ("M-g e" . consult-compile-error)
+        ("M-g f" . consult-flymake)               ;; Alternative: consult-flycheck
+        ("M-g g" . consult-goto-line)             ;; orig. goto-line
+        ("M-g M-g" . consult-goto-line)           ;; orig. goto-line
+        ("M-g o" . consult-outline)               ;; Alternative: consult-org-heading
+        ("M-g m" . consult-mark)
+        ("M-g k" . consult-global-mark)
+        ("M-g i" . consult-imenu)
+        ("M-g I" . consult-imenu-multi)
+		;; M-s bindings in `search-map'
+		("M-s d" . consult-find)                  ;; Alternative: consult-fd
+        ("M-s c" . consult-locate)
+        ("M-s g" . consult-grep)
+        ("M-s G" . consult-git-grep)
+        ("M-s r" . consult-ripgrep)
+        ("M-s l" . consult-line)
+        ("M-s L" . consult-line-multi)
+        ("M-s k" . consult-keep-lines)
+        ("M-s u" . consult-focus-lines)
+		;; Isearch integration
+        ("M-s e" . consult-isearch-history)
+        :map isearch-mode-map
+        ("M-e" . consult-isearch-history)         ;; orig. isearch-edit-string
+        ("M-s e" . consult-isearch-history)       ;; orig. isearch-edit-string
+        ("M-s l" . consult-line)                  ;; needed by consult-line to detect isearch
+        ("M-s L" . consult-line-multi)            ;; needed by consult-line to detect isearch
+        ;; Minibuffer history
+        :map minibuffer-local-map
+        ("M-s" . consult-history)                 ;; orig. next-matching-history-element
+        ("M-r" . consult-history)                 ;; orig. previous-matching-history-element
+		)
+  :hook
+  (completion-list-mode . consult-preview-at-point-mode)
+  :init
+  ;; Tweak the register preview for `consult-register-load',
+  ;; `consult-register-store' and the built-in commands.  This improves the
+  ;; register formatting, adds thin separator lines, register sorting and hides
+  ;; the window mode line.
+  (advice-add #'register-preview :override #'consult-register-window)
+  (setq register-preview-delay 0.5)
+
+  ;; Use Consult to select xref locations with preview
+  (setq xref-show-xrefs-function #'consult-xref
+        xref-show-definitions-function #'consult-xref)
+
+  :config
+  ;; Optionally configure preview. The default value
+  ;; is 'any, such that any key triggers the preview.
+  ;; (setq consult-preview-key 'any)
+  ;; (setq consult-preview-key "M-.")
+  ;; (setq consult-preview-key '("S-<down>" "S-<up>"))
+  ;; For some commands and buffer sources it is useful to configure the
+  ;; :preview-key on a per-command basis using the `consult-customize' macro.
+  (consult-customize
+   consult-theme :preview-key '(:debounce 0.2 any)
+   consult-ripgrep consult-git-grep consult-grep consult-man
+   consult-bookmark consult-recent-file consult-xref
+   consult--source-bookmark consult--source-file-register
+   consult--source-recent-file consult--source-project-recent-file
+   ;; :preview-key "M-."
+   :preview-key '(:debounce 0.4 any))
+
+  ;; Optionally configure the narrowing key.
+  ;; Both < and C-+ work reasonably well.
+  (setq consult-narrow-key "<") ;; "C-+"
+
+  ;; Optionally make narrowing help available in the minibuffer.
+  ;; You may want to use `embark-prefix-help-command' or which-key instead.
+  ;; (keymap-set consult-narrow-map (concat consult-narrow-key " ?") #'consult-narrow-help)
+
+  (autoload 'projectile-project-root "projectile")
+  (setq consult-project-function (lambda (_) (projectile-project-root)))
+  )
+
 (use-package projectile
   :ensure t
   :init
-  (setq projectile-completion-system 'ivy)
+  ;;(setq projectile-completion-system 'ivy)
   (setq projectile-enable-caching 'persistent)
   (setq projectile-cache-file "~/.emacs.d/projectile.cache")
   ;;(setq projectile-auto-update-cache t) do we want this?
@@ -227,13 +335,6 @@
   (projectile-mode +1)
   :bind-keymap
   ("C-c p" . projectile-command-map)
-  )
-
-(use-package counsel-projectile
-  :after projectile
-  :ensure t
-  :config
-  (counsel-projectile-mode 1)
   )
 
 (use-package markdown-mode
@@ -278,12 +379,6 @@
 (use-package clang-format
   :ensure t
   :bind (("C-c C-f" . clang-format-region)
-		 )
-  )
-
-(use-package browse-kill-ring
-  :ensure t
-  :bind (("M-y" . browse-kill-ring)
 		 )
   )
 
