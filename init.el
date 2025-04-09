@@ -30,6 +30,7 @@
 (setq backup-inhibited t)
 (setq-default intent-tabs-mode t)
 (setq-default tab-width 4)
+(setq blink-cursor-mode nil)
 
 (require 'package)
 (setq package-archives '(("melpa" . "https://melpa.org/packages/")
@@ -78,6 +79,11 @@
 	 ("C-a" . smarter-begining-of-line)
 	 ("C-+" . text-scale-increase)
 	 ("C--" . text-scale-decrease)
+	 ("M-p" . backward-paragraph)
+	 ("M-n" . forward-paragraph)
+	 ("C-S-<up>" . move-line-up)
+	 ("C-S-<down>" . move-line-down)
+	 ("M-C-SPC" . mark-sexp-at-point)
 	 )
   :config
   (setq frame-title-format
@@ -93,6 +99,63 @@
 		(beginning-of-line))))
   (hl-line-mode)
   (fset 'yes-or-no-p 'y-or-n-p)
+  (delete-selection-mode 1) ;; Deletion commands work on regions.
+
+  (defun mark-sexp-at-point ()
+	"Like running backward-sexp, then forward sexp and mark."
+	(interactive)
+	(forward-sexp)
+	(set-mark-command nil)
+	(backward-sexp))
+
+  (defun move-line-up ()
+	"Move the current line up one line."
+	(interactive)
+	(transpose-lines 1)
+	(forward-line -2)
+	(indent-according-to-mode))
+
+  (defun move-line-down ()
+	"Move the current line down one line."
+	(interactive)
+	(forward-line 1)
+	(transpose-lines 1)
+	(forward-line -1)
+	(indent-according-to-mode))
+
+  (defun copy-file-name ()
+	"Copy the current file's filename to clipboard."
+	(interactive)
+	(if buffer-file-name
+		(progn
+		  (kill-new buffer-file-name)
+		  buffer-file-name)
+	  nill))
+
+  (defun create-cpp-include (file-path)
+	"Create a c++ include statment from file path."
+	(interactive "fFile path: ")
+	(let* ((normalized-path (replace-regexp-in-string "\\\\" "/" file-path))
+		   (public-pos (string-match "/Public/" normalized-path))
+		   (code-pos (string-match "/Code/" normalized-path))
+		   (include-path
+			(cond
+			 (public-pos
+			  (substring normalized-path
+						 (+ public-pos (length "/Public/"))))
+			 (code-pos
+			  (substring normalized-path
+						 (+ code-pos (length "/Code/"))))
+			 (t normalized-path))))
+	  (kill-new (format "#include <%s>" include-path)))
+	)
+
+  (defun create-cpp-include-from-current-buffer ()
+	"Create a c++ include statement for the current buffer."
+	(interactive)
+	(create-cpp-include-statement (copy-file-name))
+	)
+					  
   )
 
 (use-package server
@@ -194,9 +257,19 @@
 
 (use-package lsp-bridge
   :load-path "~/lsp-bridge"
+  :bind
+  (("M-." . my-lsp-bridge-find-def-with-xref)
+	)
   :config
   (setq lsp-bridge-enable-signature-help t)
   (global-lsp-bridge-mode)
+
+  (defun my-lsp-bridge-find-def-with-xref ()
+	  "Use lsp-bridge-find-def but with xref mark integration."
+	(interactive)
+	(xref-push-marker-stack)
+	(lsp-bridge-find-def))
+  
   )
 
 (use-package rg
