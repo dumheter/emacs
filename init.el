@@ -1,12 +1,18 @@
 ;; # Readme
 ;;
 ;; ## Windows Config
+;; ### Open files in same window
 ;; Accociate your files with emacsclientw.exe. This will open a new window.
 ;; To make it open in the current window, open regedit:
 ;;   > HKEY_CLASSES_ROOT\Applications\emacsclientw.exe\shell\open\command
 ;; Make sure it says (add --no-wait):
 ;;   > "C:\Path\To\emacsclientw.exe" --no-wait "%1"
 ;;
+;; ### Hunspell
+;; Install hunspell.
+;;   > choco install hunspell.portable
+;; Copy over en_US.{aff,dic} to C:/Hunspell
+;,
 ;; ## Help
 ;;
 ;; ### Not loading this file
@@ -319,6 +325,36 @@
 
   (autoload 'projectile-project-root "projectile")
   (setq consult-project-function (lambda (_) (projectile-project-root)))
+  )
+
+(use-package flyspell
+  :ensure nil
+  :hook ((text-mode . flyspell-mode)
+		 (prog-mode . flyspell-prog-mode))
+  :config
+  ;; Do we want aspell on linux?
+  (setq ispell-program-name "hunspell") ;; Make sure to have it installed.
+  (setq ispell-really-hunspell t) ;; Needed for hunspell.
+  (setq ispell-dictionary "en_US")
+  ;; Add hunspell search paths
+  (setq ispell-hunspell-dictionary-alist
+        '(("en_US" "[[:alpha:]]" "[^[:alpha:]]" "[']" nil ("-d" "en_US") nil utf-8)))
+  (setq flyspell-issue-message-flag nil) ;; Dont send a message for every issue.
+  ;; Not sure what this part does:
+  (with-eval-after-load 'consult
+	(define-key consult-mode-map [remap ispell-word] #'consult-flyspell)
+  )
+
+(use-package consult-flyspell
+  :ensure t
+  :after (consult flyspell)
+  ;;:bind (:map flyspell-mode-map
+			  ;;("C-." . consult-flyspell))
+  ;;To correct word directly with `flyspell-correct-word'.
+  ;;(setq consult-flyspell-select-function 'flyspell-correct-at-point)
+
+  ;;To correct word directly with `flyspell-correct-word' and jump back to `consult-flyspell'.
+  ;;(setq consult-flyspell-select-function (lambda () (flyspell-correct-at-point) (consult-flyspell)))
   )
 
 (use-package projectile
