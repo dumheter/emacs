@@ -100,7 +100,7 @@
    '(read-only t cursor-intagible t face minibuffer-prompt))
   :config
   (setq frame-title-format
-		'("%b @ " (:eval (if (buffer-file-name)
+		'("Emacs @ " (:eval (if (buffer-file-name)
 							 (abbreviate-file-name (buffer-file-name))
                           (buffer-name)))))
   (defun smarter-begining-of-line ()
