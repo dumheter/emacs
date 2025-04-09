@@ -19,6 +19,10 @@
 ;; ### lsp-bridge doesnt work.
 ;; Search for `App Execution Aliases` and turn off python.
 
+;; TODO
+;; * spell checker
+;; * ai copilot
+
 (menu-bar-mode -1)
 (tool-bar-mode -1)
 (scroll-bar-mode -1)
@@ -74,6 +78,7 @@
   )
 
 (use-package emacs
+  :init
   :ensure nil ;; buildin package
   :bind (
 	 ("C-a" . smarter-begining-of-line)
@@ -133,7 +138,7 @@
 	  nill))
 
   (defun create-cpp-include (file-path)
-	"Create a c++ include statment from file path."
+	"Create a c++ include from file path."
 	(interactive "fFile path: ")
 	(let* ((normalized-path (replace-regexp-in-string "\\\\" "/" file-path))
 		   (public-pos (string-match "/Public/" normalized-path))
@@ -151,9 +156,9 @@
 	)
 
   (defun create-cpp-include-from-current-buffer ()
-	"Create a c++ include statement for the current buffer."
+	"Create a c++ include for the current buffer."
 	(interactive)
-	(create-cpp-include-statement (copy-file-name))
+	(create-cpp-include (copy-file-name))
 	)
 					  
   )
@@ -215,8 +220,9 @@
   (setq projectile-enable-caching 'persistent)
   (setq projectile-cache-file "~/.emacs.d/projectile.cache")
   ;;(setq projectile-auto-update-cache t) do we want this?
-  (setq projectile-indexing-method 'alien)
+  (setq projectile-indexing-method 'hybrid)
   (setq projectile-sort-order 'recently-active)
+  (setq projectile-generic-command "fd -e cpp -e h -e ddf -tf --color=never .")
   :config
   (projectile-mode +1)
   :bind-keymap
@@ -253,25 +259,6 @@
         ("C-c y l" . yas-describe-tables))      ;; List available snippets
   )
 
-(add-to-list 'load-path (expand-file-name "~/lsp-bridge"))
-
-(use-package lsp-bridge
-  :load-path "~/lsp-bridge"
-  :bind
-  (("M-." . my-lsp-bridge-find-def-with-xref)
-	)
-  :config
-  (setq lsp-bridge-enable-signature-help t)
-  (global-lsp-bridge-mode)
-
-  (defun my-lsp-bridge-find-def-with-xref ()
-	  "Use lsp-bridge-find-def but with xref mark integration."
-	(interactive)
-	(xref-push-marker-stack)
-	(lsp-bridge-find-def))
-  
-  )
-
 (use-package rg
   :ensure t
   :config
@@ -305,4 +292,21 @@
   (clipmon-mode-start)
   )
 
-;; clipmon
+(use-package lsp-bridge
+  :load-path "~/lsp-bridge"
+  :demand t
+  :bind
+  (("M-." . my-lsp-bridge-find-def-with-xref)
+	)
+  :config
+  (setq lsp-bridge-enable-signature-help t)
+  (global-lsp-bridge-mode)
+  (setq lsp-bridge-enable-inlay-hint t)
+  (setq lsp-bridge-enable-hover-diagnostic t)
+
+  (defun my-lsp-bridge-find-def-with-xref ()
+	  "Use lsp-bridge-find-def but with xref mark integration."
+	(interactive)
+	(xref-push-marker-stack)
+	(lsp-bridge-find-def))
+  )
