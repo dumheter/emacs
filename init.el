@@ -469,20 +469,6 @@
 	(lsp-bridge-find-def))
   )
 
-;;(use-package gptel
-;;  :config
-;;  (setq gptel-model 'o3-mini
-;;		gptel-backend
-;;		(gptel-make-openai "Github UwU"
-;;		  :host "models.inference.ai.azure.com"
-;;		  ;;:endpoint "/chat/completions?api-version=2024-05-01-preview"
-;;		  :stream t
-;;		  :key "YOUR KEY HERE"
-;;		  :models '(o3-mini)
-;;		  )
-;;		)
-;;  )
-
 (use-package copilot-chat
   :ensure t
   )
