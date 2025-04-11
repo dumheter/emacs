@@ -1,14 +1,30 @@
 ;; # Readme
 ;;
-;; ## Windows Config
-;; ### Open files in same window
+;; ## Install
+;; Do this first time you use this config:
+;;
+;; ### lsp-bridge
+;; > cd ~ && mkdir lsp-bridge && cd lsp-bridge
+;; > git init
+;; (http) > git remote add origin https://github.com/manateelazycat/lsp-bridge.git
+;; (ssh)  > git remote add origin git@github.com:manateelazycat/lsp-bridge.git
+;; 
+;; ### clangd big project
+;; 1. Locate your lsp-bridge install.
+;; 2. In the langserver folder, check for clangd.json.
+;; 3. insert these at the end:
+;;   "--completion-style=detailed",
+;;   "--background-index=false"
+;;
+;; ### Windows Config
+;; #### Open files in same window
 ;; Accociate your files with emacsclientw.exe. This will open a new window.
 ;; To make it open in the current window, open regedit:
 ;;   > HKEY_CLASSES_ROOT\Applications\emacsclientw.exe\shell\open\command
 ;; Make sure it says (add --no-wait):
 ;;   > "C:\Path\To\emacsclientw.exe" --no-wait "%1"
 ;;
-;; ### Hunspell
+;; #### Hunspell
 ;; Install hunspell.
 ;;   > choco install hunspell.portable
 ;; Copy over en_US.{aff,dic} to C:/Hunspell
@@ -26,7 +42,6 @@
 ;; Search for `App Execution Aliases` and turn off python.
 
 ;; TODO
-;; * spell checker
 ;; * ai copilot
 
 (menu-bar-mode -1)
@@ -83,6 +98,12 @@
   (load custom-file)
   )
 
+(use-package warnings
+  :ensure nil
+  :config
+  (add-to-list 'warning-suppress-types '(undo discard-info))
+  )
+
 (use-package emacs
   :ensure nil ;; buildin package
   :bind (
@@ -105,10 +126,11 @@
   (minibuffer-promt-properties
    '(read-only t cursor-intagible t face minibuffer-prompt))
   :config
+  (setq scroll-conservatively 101) ;; Only scroll one step once cursor leaves window.
   (setq frame-title-format
 		'("Emacs @ " (:eval (if (buffer-file-name)
 							 (abbreviate-file-name (buffer-file-name))
-                          (buffer-name)))))
+							 (buffer-name)))))
   (defun smarter-begining-of-line ()
     "Move point to first non-whitespace character or beginning of line."
     (interactive)
@@ -175,6 +197,14 @@
 	(create-cpp-include (copy-file-name))
 	)
 					  
+  )
+
+
+(use-package cc-mode
+  ;; Don't indent after namespace.
+  :hook (c++-mode . (lambda ()
+					  (c-set-offset 'innamespace 0)
+					  (c-set-offset 'namespace-open 0)))
   )
 
 (use-package server
@@ -341,8 +371,8 @@
         '(("en_US" "[[:alpha:]]" "[^[:alpha:]]" "[']" nil ("-d" "en_US") nil utf-8)))
   (setq flyspell-issue-message-flag nil) ;; Dont send a message for every issue.
   ;; Not sure what this part does:
-  (with-eval-after-load 'consult
-	(define-key consult-mode-map [remap ispell-word] #'consult-flyspell)
+  ;;(with-eval-after-load 'consult
+	;;(define-key consult-mode-map [remap ispell-word] #'consult-flyspell))
   )
 
 (use-package consult-flyspell
@@ -359,15 +389,12 @@
 
 (use-package projectile
   :ensure t
-  :init
-  ;;(setq projectile-completion-system 'ivy)
+  :config
   (setq projectile-enable-caching 'persistent)
   (setq projectile-cache-file "~/.emacs.d/projectile.cache")
-  ;;(setq projectile-auto-update-cache t) do we want this?
-  (setq projectile-indexing-method 'hybrid)
-  (setq projectile-sort-order 'recently-active)
-  (setq projectile-generic-command "fd -e cpp -e h -e ddf -tf --color=never .")
-  :config
+  (setq projectile-indexing-method 'alien)
+  ;;(setq projectile-sort-order 'recently-active)
+  ;;(setq projectile-generic-command "fd -e cpp -e h -e ddf -tf --color=never")
   (projectile-mode +1)
   :bind-keymap
   ("C-c p" . projectile-command-map)
@@ -440,4 +467,31 @@
 	(interactive)
 	(xref-push-marker-stack)
 	(lsp-bridge-find-def))
+  )
+
+;;(use-package gptel
+;;  :config
+;;  (setq gptel-model 'o3-mini
+;;		gptel-backend
+;;		(gptel-make-openai "Github UwU"
+;;		  :host "models.inference.ai.azure.com"
+;;		  ;;:endpoint "/chat/completions?api-version=2024-05-01-preview"
+;;		  :stream t
+;;		  :key "YOUR KEY HERE"
+;;		  :models '(o3-mini)
+;;		  )
+;;		)
+;;  )
+
+(use-package copilot-chat
+  :ensure t
+  )
+
+(use-package org
+  :hook (org-mode . visual-line-mode)
+  )
+
+(use-package auto-highlight-symbol
+  :config
+  (global-auto-highlight-symbol-mode t)
   )
