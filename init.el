@@ -481,3 +481,166 @@
   :config
   (global-auto-highlight-symbol-mode t)
   )
+
+;; -------------------------------------------------------------------
+;; run-exe
+
+(defvar run-exe-last-path nil
+  "Caches the last executable path used by `run-exe-and-capture-output'.")
+
+(defvar run-exe-last-args ""
+  "Caches the last arguments used by `run-exe-and-capture-output'.")
+
+(defun run-exe (exe-path &optional args)
+  "Run an executable at EXE-PATH with optional ARGS, capture stdout and exit code, and display in a buffer."
+  (interactive
+   (let* ((base-dir (or run-exe-last-path default-directory))
+		  (path (read-file-name
+				 "Path to executable: "
+				 base-dir
+				 run-exe-last-path
+				 t))
+		  (arg-string (read-string
+					   "Arguments (space-separated): "
+					   run-exe-last-args)))
+	 (setq run-exe-last-path path)
+	 (setq run-exe-last-args arg-string)
+	 (list path arg-string)))
+  (let* ((arg-list (if args (split-string args " " t) nil))
+		 (buffer-name (concat "*run-exe: " (file-name-nondirectory exe-path) "*"))
+         (output-buffer (get-buffer-create buffer-name))
+         (exit-code 0)
+         (output (with-output-to-string
+                   (setq exit-code
+                         (apply #'call-process exe-path nil standard-output nil arg-list)))))
+    (with-current-buffer output-buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "=== Program Output ===\n\n")
+        (insert output)
+        (insert "\n=== Program Finished ===\n")
+        (insert (format "Exit code: %d\n" exit-code))
+        (special-mode)))
+    (display-buffer output-buffer)
+    (message "Executable finished with exit code: %d" exit-code)))
+
+;; -------------------------------------------------------------------
+;; run-exe-async
+
+;; Define the sentinel function first, as it will be referenced by run-exe-async
+(defun run-exe-async--sentinel (process event)
+  "Process sentinel for `run-exe-async'. Appends exit status to the buffer."
+  (let ((buffer (process-buffer process))
+        (exit-status-info nil))
+    (cond
+     ((string-match "\\(finished\\|exited\\|signal\\)" event)
+      (setq exit-status-info
+            (format "\n--- Process %s %s --- Exit code: %s\n"
+                    (process-name process)
+                    (replace-regexp-in-string "\n$" "" event)
+                    (process-exit-status process))))
+     )
+    (when (and exit-status-info buffer (buffer-live-p buffer))
+      (with-current-buffer buffer
+        (let ((buffer-read-only nil))
+          (goto-char (point-max))
+          (insert exit-status-info)
+          (goto-char (point-max))
+          (setq mode-line-process nil) ; Clear process from mode-line on exit
+          )))))
+
+;; Variable to store the last used arguments (list of strings)
+(defvar run-exe-async--last-args nil
+  "List of strings representing the last arguments used by `run-exe-async`.")
+
+(defun run-exe-async (exe-path &optional args)
+  "Run EXE-PATH asynchronously with optional ARGS (list of strings).
+
+Capture stdout/stderr in real-time into a buffer named after
+the executable (*myprogram.exe-output*). Append the exit code
+upon completion.
+
+When called INTERACTIVELY:
+- Prompts for the executable path.
+- Prompts for arguments, suggesting the last used arguments
+  (from `run-exe-async--last-args`) as the default value.
+- The arguments provided interactively are remembered for the next call.
+
+When called PROGRAMMATICALLY:
+- If ARGS is provided (non-nil list), these args are used and
+  remembered as the 'last arguments' for the next interactive call.
+- If ARGS is nil, the command runs with no arguments, and the
+  'last arguments' suggestion is NOT updated.
+
+Returns the process object on success, nil on failure to start."
+
+  ;; --- Interactive Argument Handling ---
+  (interactive
+   (let* ((base-dir (or run-exe-last-path default-directory))
+		  (path (read-file-name
+				 "Path to executable: "
+				 base-dir
+				 run-exe-last-path
+				 t))
+		  (arg-string (read-string
+					   "Arguments (space-separated): "
+					   run-exe-last-args)))
+	 (list path arg-string)))
+
+  ;; --- Main Function Body ---
+
+  ;; Basic check (using the provided exe-path)
+  (unless (file-exists-p exe-path)
+    (message "Error: File does not exist: %s" exe-path)
+    (error "File not found: %s" exe-path))
+
+  (when (and (not (called-interactively-p 'any)) exe-path)
+	(setq run-exe-last-path exe-path))
+  (when (and (not (called-interactively-p 'any)) args)
+	(setq run-exe-last-args args))
+
+  ;; Normalize path just for internal consistency/display
+  (let* ((normalized-path (expand-file-name exe-path))
+         (filename (file-name-nondirectory normalized-path))
+         (process-name filename)
+         (buffer-name (format "*%s-output*" filename))
+         (output-buffer (get-buffer-create buffer-name))
+         (process nil))
+
+    ;; Prepare and display the output buffer
+    (with-current-buffer output-buffer
+      (let ((buffer-read-only nil))
+        (erase-buffer)
+        (insert (format "--- Starting: %s %s ---\nCommand: %s\nArguments: %s\n\n"
+                        (format-time-string "%Y-%m-%d %H:%M:%S")
+                        process-name
+                        normalized-path
+                        ;; Use the 'args' passed to the function body
+                        (if args (mapconcat #'identity args " ") "<none>")))
+        (goto-char (point-max))
+        (setq buffer-read-only nil)))
+    (display-buffer output-buffer)
+
+    ;; Start the process
+    (condition-case err
+        (progn
+          ;; Use the 'args' passed to the function body
+		  (message "woah 1")
+          (setq process (apply #'start-process
+                               process-name output-buffer normalized-path args))
+		  (message "woah 2")
+          (set-process-sentinel process #'run-exe-async--sentinel)
+		  (message "woah 3")
+          (with-current-buffer output-buffer
+            (setq mode-line-process `(:propertize ,process-name help-echo "Process Info")))
+		  (message "woah 4")
+          (message "Process '%s' started asynchronously (Args: %s)."
+                   process-name (if args (prin1-to-string args) "<none>")))
+      (error (message "Error starting process '%s': %s" normalized-path err)
+             (with-current-buffer output-buffer
+               (let ((buffer-read-only nil))
+                 (goto-char (point-max))
+                 (insert (format "\n--- ERROR starting process: %s ---" err))))
+             (setq process nil)))
+    process))
+
