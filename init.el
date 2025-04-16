@@ -138,7 +138,7 @@
       (back-to-indentation)
       (when (eq pt (point))
 		(beginning-of-line))))
-  (hl-line-mode)
+  (global-hl-line-mode)
   (fset 'yes-or-no-p 'y-or-n-p)
   (delete-selection-mode 1) ;; Deletion commands work on regions.
 
