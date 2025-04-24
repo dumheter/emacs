@@ -126,6 +126,9 @@
   (minibuffer-promt-properties
    '(read-only t cursor-intagible t face minibuffer-prompt))
   :config
+  (setq recentf-max-saved-items 5000) ;; keep many things in recentf
+  (setq recentf-save-file "~/.emacs.d/recentf")
+  (run-at-time nil (* 10 60) 'recentf-save-list) ;; save even if emacs crashes
   (setq scroll-conservatively 101) ;; Only scroll one step once cursor leaves window.
   (setq frame-title-format
 		'("Emacs @ " (:eval (if (buffer-file-name)
