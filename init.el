@@ -205,6 +205,7 @@
 
 (use-package cc-mode
   ;; Don't indent after namespace.
+  :mode("\\.ixx\\'" . c++-mode)
   :hook (c++-mode . (lambda ()
 					  (c-set-offset 'innamespace 0)
 					  (c-set-offset 'namespace-open 0)))
