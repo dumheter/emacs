@@ -126,9 +126,6 @@
   (minibuffer-promt-properties
    '(read-only t cursor-intagible t face minibuffer-prompt))
   :config
-  (setq recentf-max-saved-items 5000) ;; keep many things in recentf
-  (setq recentf-save-file "~/.emacs.d/recentf")
-  (run-at-time nil (* 10 60) 'recentf-save-list) ;; save even if emacs crashes
   (setq scroll-conservatively 101) ;; Only scroll one step once cursor leaves window.
   (setq frame-title-format
 		'("Emacs @ " (:eval (if (buffer-file-name)
@@ -202,10 +199,44 @@
 					  
   )
 
+(use-package recentf
+  :ensure nil ; built in
+  :hook (after-init . recentf-mode)
+  :init
+  (run-at-time nil (* 10 60) 'recentf-save-list) ;; save even if emacs crashes
+  :config
+  (setq recentf-max-saved-items 5000) ;; keep many things in recentf
+  (setq recentf-save-file "~/.emacs.d/recentf")
+  )
+
+(defun my-projectile-configure-project ()
+  "Configure the current project using CMake with Ninja for Debug build."
+  (interactive)
+  (let ((compilation-read-command nil) ;; disable prompt
+        (command-map (if (projectile--cache-project-commands-p) projectile-compilation-cmd-map)))
+    (projectile--run-project-cmd "cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE=Debug -G \"Ninja\" -B build" command-map
+                                 :show-prompt t
+                                 :prompt-prefix "Compile command: "
+                                 :save-buffers t
+                                 :use-comint-mode projectile-compile-use-comint-mode)))
+
+(defun my-projectile-build-project ()
+  "Compile the current project using 'cmake --build build'."
+  (interactive)
+  (let ((compilation-read-command nil) ;; disable prompt
+        (command-map (if (projectile--cache-project-commands-p) projectile-compilation-cmd-map)))
+    (projectile--run-project-cmd "cmake --build build" command-map
+                                 :show-prompt nil
+                                 :prompt-prefix "Compile command: "
+                                 :save-buffers t
+                                 :use-comint-mode projectile-compile-use-comint-mode)))
 
 (use-package cc-mode
   ;; Don't indent after namespace.
   :mode("\\.ixx\\'" . c++-mode)
+  :bind(:map c-mode-base-map
+			 ("C-c n" . my-projectile-build-project)
+			 ("C-c l" . my-projectile-configure-project))
   :hook (c++-mode . (lambda ()
 					  (c-set-offset 'innamespace 0)
 					  (c-set-offset 'namespace-open 0)))
@@ -485,6 +516,24 @@
   :config
   (global-auto-highlight-symbol-mode t)
   )
+
+(use-package lua-mode
+  :ensure t
+  )
+
+(use-package ansi-color
+  :ensure nil ;; it's built-in, no need to install
+  :hook (compilation-filter . my/ansi-colorize-compilation-buffer)
+  :config
+  (defun my/ansi-colorize-compilation-buffer ()
+    (let ((inhibit-read-only t))
+      (ansi-color-apply-on-region compilation-filter-start (point)))))
+
+(use-package cmake-mode
+  :ensure t
+  :bind (:map cmake-mode-map
+			 ("C-c n" . my-projectile-build-project)
+			 ("C-c l" . my-projectile-configure-project)))
 
 ;; -------------------------------------------------------------------
 ;; run-exe
