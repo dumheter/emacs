@@ -535,6 +535,14 @@
 			 ("C-c n" . my-projectile-build-project)
 			 ("C-c l" . my-projectile-configure-project)))
 
+(use-package ace-jump-mode
+  :ensure t
+  :init
+  :bind (:map global-map
+			  ("C-c SPC" . ace-jump-mode)
+			  ("C-x SPC" . ace-jump-mode-pop-mark))
+  )
+
 ;; -------------------------------------------------------------------
 ;; run-exe
 
