@@ -239,7 +239,8 @@
 			 ("C-c l" . my-projectile-configure-project))
   :hook (c++-mode . (lambda ()
 					  (c-set-offset 'innamespace 0)
-					  (c-set-offset 'namespace-open 0)))
+					  (c-set-offset 'namespace-open 0)
+					  (c-set-offset 'substatement-open 0)))
   )
 
 (use-package server
