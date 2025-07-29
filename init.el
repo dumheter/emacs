@@ -199,6 +199,13 @@
 					  
   )
 
+(use-package exec-path-from-shell
+  :ensure t
+  :config
+  (when (memq window-system '(mac ns x))
+	(exec-path-from-shell-initialize))
+  )
+
 (use-package recentf
   :ensure nil ; built in
   :hook (after-init . recentf-mode)
@@ -507,6 +514,27 @@
 
 (use-package copilot-chat
   :ensure t
+  )
+
+(use-package gptel
+  :ensure t
+  :config
+  ;; If gemini api key is setup, use it as default. Otherwise default to copilot.
+  (exec-path-from-shell-copy-env "GEMINI_API_KEY")
+  (let ((gemini-api-key (getenv "GEMINI_API_KEY")))
+	(if gemini-api-key
+		(setq
+         gptel-model 'gemini-2.0-flash
+         gptel-backend (gptel-make-gemini "Gemini" :key gemini-api-key :stream t))
+      (setq
+	   gptel-model 'gpt-4o-copilot
+	   gptel-backend (gptel-make-gh-copilot "Copilot"))))
+
+  ;; Optional: auto-wrap responses for readability:
+  (defun my-gptel-fill-buffer ()
+    (save-excursion
+      (fill-region (point-min) (point-max))))
+  (add-hook 'gptel-post-response-hook #'my-gptel-fill-buffer)
   )
 
 (use-package org
