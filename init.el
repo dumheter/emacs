@@ -199,13 +199,6 @@
 					  
   )
 
-(use-package exec-path-from-shell
-  :ensure t
-  :config
-  (when (memq window-system '(mac ns x))
-	(exec-path-from-shell-initialize))
-  )
-
 (use-package recentf
   :ensure nil ; built in
   :hook (after-init . recentf-mode)
@@ -520,7 +513,6 @@
   :ensure t
   :config
   ;; If gemini api key is setup, use it as default. Otherwise default to copilot.
-  (exec-path-from-shell-copy-env "GEMINI_API_KEY")
   (let ((gemini-api-key (getenv "GEMINI_API_KEY")))
 	(if gemini-api-key
 		(setq
