@@ -519,7 +519,7 @@
          gptel-model 'gemini-2.0-flash
          gptel-backend (gptel-make-gemini "Gemini" :key gemini-api-key :stream t))
       (setq
-	   gptel-model 'gpt-4o-copilot
+	   gptel-model 'gpt-4o
 	   gptel-backend (gptel-make-gh-copilot "Copilot"))))
 
   ;; Optional: auto-wrap responses for readability:
