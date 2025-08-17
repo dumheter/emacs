@@ -126,6 +126,7 @@
   (minibuffer-promt-properties
    '(read-only t cursor-intagible t face minibuffer-prompt))
   :config
+  (set-face-attribute 'fixed-pitch nil :font "Cascadia Mono PL-9")
   (setq scroll-conservatively 101) ;; Only scroll one step once cursor leaves window.
   (setq frame-title-format
 		'("Emacs @ " (:eval (if (buffer-file-name)
@@ -457,7 +458,7 @@
         ("C-c y n" . yas-new-snippet)           ;; Create a new snippet
         ("C-c y v" . yas-visit-snippet-file)    ;; Edit a snippet
         ("C-c y l" . yas-describe-tables))      ;; List available snippets
-  )
+  )
 
 (use-package rg
   :ensure t
@@ -522,6 +523,14 @@
 	   gptel-model 'gpt-4o
 	   gptel-backend (gptel-make-gh-copilot "Copilot"))))
 
+  (setq ;;gptel-model 'lmstudio
+		gptel-backend
+		(gptel-make-openai "LM-Studio"
+						   :stream t
+						   :protocol "http"
+						   :host "localhost:1234"
+						   :models '(lmstudio)))
+
   ;; Optional: auto-wrap responses for readability:
   (defun my-gptel-fill-buffer ()
     (save-excursion
@@ -567,44 +576,60 @@
 ;; -------------------------------------------------------------------
 ;; run-exe
 
-(defvar run-exe-last-path nil
-  "Caches the last executable path used by `run-exe-and-capture-output'.")
-
-(defvar run-exe-last-args ""
-  "Caches the last arguments used by `run-exe-and-capture-output'.")
+;; Define history variables so they are properly scoped
+(defvar run-exe-last-path nil "Last used executable path for run-exe.")
+(defvar run-exe-last-args nil "Last used arguments for run-exe.")
 
 (defun run-exe (exe-path &optional args)
-  "Run an executable at EXE-PATH with optional ARGS, capture stdout and exit code, and display in a buffer."
+  "Run an executable at EXE-PATH with optional ARGS, capture stdout, stderr, and exit code, and display in a buffer."
   (interactive
    (let* ((base-dir (or run-exe-last-path default-directory))
-		  (path (read-file-name
-				 "Path to executable: "
-				 base-dir
-				 run-exe-last-path
-				 t))
-		  (arg-string (read-string
-					   "Arguments (space-separated): "
-					   run-exe-last-args)))
-	 (setq run-exe-last-path path)
-	 (setq run-exe-last-args arg-string)
-	 (list path arg-string)))
-  (let* ((arg-list (if args (split-string args " " t) nil))
-		 (buffer-name (concat "*run-exe: " (file-name-nondirectory exe-path) "*"))
+          (path (read-file-name
+                 "Path to executable: "
+                 base-dir
+                 run-exe-last-path
+                 t))
+          (arg-string (read-string
+                       "Arguments (space-separated): "
+                       nil ; history
+                       run-exe-last-args)))
+     ;; Store the values for the next run
+     (setq run-exe-last-path path)
+     (setq run-exe-last-args arg-string)
+     ;; Return the arguments for the function
+     (list path arg-string)))
+
+  (let* (;; Split arguments only if the string is not nil or empty
+         (arg-list (if (and args (not (string-blank-p args))) (split-string args " " t) nil))
+         (buffer-name (concat "*run-exe: " (file-name-nondirectory exe-path) "*"))
          (output-buffer (get-buffer-create buffer-name))
-         (exit-code 0)
-         (output (with-output-to-string
-                   (setq exit-code
-                         (apply #'call-process exe-path nil standard-output nil arg-list)))))
+         (exit-code 0))
+
+    ;; Switch to the output buffer to prepare it
     (with-current-buffer output-buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert "=== Program Output ===\n\n")
-        (insert output)
-        (insert "\n=== Program Finished ===\n")
+        (insert (format "Running: %s %s\n" exe-path (or args "")))
+        (insert "--- stdout & stderr ---\n\n")))
+
+    ;; --- KEY FIX ---
+    ;; Run the process directly, sending output to our buffer.
+    ;; The third argument to call-process is DESTINATION.
+    ;; By providing a list `(BUFFER T)`, we instruct it to send
+    ;; both stdout and stderr to our buffer.
+    (setq exit-code (apply #'call-process exe-path nil `(,output-buffer t) nil arg-list))
+
+    ;; Switch back to the output buffer to add final info and display it
+    (with-current-buffer output-buffer
+      (let ((inhibit-read-only t))
+        (goto-char (point-max)) ; Go to the end to append
+        (insert "\n--- Process Finished ---\n")
         (insert (format "Exit code: %d\n" exit-code))
-        (special-mode)))
+        (goto-char (point-min)) ; Go to the top for the user
+        (special-mode))) ; A simple mode for output buffers
+
     (display-buffer output-buffer)
-    (message "Executable finished with exit code: %d" exit-code)))
+    (message "Executable '%s' finished with exit code: %d" (file-name-nondirectory exe-path) exit-code)))
 
 ;; -------------------------------------------------------------------
 ;; run-exe-async
