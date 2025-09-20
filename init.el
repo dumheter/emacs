@@ -126,7 +126,11 @@
   (minibuffer-promt-properties
    '(read-only t cursor-intagible t face minibuffer-prompt))
   :config
-  (set-face-attribute 'fixed-pitch nil :font "Cascadia Mono PL-9")
+  (cond
+   ((string-equal system-type "windows-nt")
+	(progn
+	  (set-face-attribute 'fixed-pitch nil :font "Cascadia Mono PL-9")))
+   )
   (setq scroll-conservatively 101) ;; Only scroll one step once cursor leaves window.
   (setq frame-title-format
 		'("Emacs @ " (:eval (if (buffer-file-name)
