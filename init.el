@@ -435,6 +435,59 @@
   (projectile-mode +1)
   :bind-keymap
   ("C-c p" . projectile-command-map)
+
+  :custom
+  (defun my/projectile-related-file ()
+    "Open the C++ file that corresponds to the one you are editing.
+
+If the current buffer is visiting `foo.cpp` this command will look for
+`foo.hpp`; if it is visiting `bar.hpp` it will look for `bar.cpp`.
+
+* If exactly one match exists – open it automatically.
+* If several matches exist – present a completing‑read list so you can pick.
+
+The search is performed in the current Projectile project.  If the file
+is not part of a Projectile project or has an unsupported extension,
+the command simply signals an error."
+    (interactive)
+    ;; 1. Grab the name/extension of the current buffer.
+    (let* ((buf-file   (buffer-file-name))
+           (ext        (and buf-file (file-name-extension buf-file)))
+           (base       (and ext (file-name-base buf-file))))
+      (unless (and base
+                   (member ext '("cpp" "hpp")))
+        (user-error "This command only works on .cpp or .hpp files"))
+
+      ;; 2. Compute the target extension and build a matcher.
+      (let* ((target-ext (if (string= ext "cpp") "hpp" "cpp"))
+             (project-root   (or (projectile-acquire-root)
+                                 (user-error "Not in a Projectile project")))
+             (all-files      (projectile-project-files project-root))
+             ;; Keep only files that share the same base name and have the
+             ;; desired target extension.
+             (candidates     (cl-remove-if-not
+                              (lambda (f)
+                                (and (string= (file-name-extension f) target-ext)
+                                     (string= (file-name-base f) base)))
+                              all-files)))
+
+        (cond
+         ((null candidates)
+          (user-error "No %s file found for `%s`" target-ext base))
+
+         ((= (length candidates) 1)
+          ;; One match – open it directly.
+          (find-file (expand-file-name (car candidates) project-root))
+          (message "Opened %s" (car candidates)))
+
+         (t
+          ;; Multiple matches – ask the user to pick one.
+          (let ((choice (projectile-completing-read
+                         (format "Select %s: " target-ext)
+                         candidates)))
+            (when choice
+              (find-file (expand-file-name choice project-root))
+              (message "Opened %s" choice))))))))
   )
 
 (use-package markdown-mode
