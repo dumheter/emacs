@@ -433,6 +433,17 @@
   ;;(setq projectile-sort-order 'recently-active)
   ;;(setq projectile-generic-command "fd -e cpp -e h -e ddf -tf --color=never")
   (projectile-mode +1)
+
+  ;; Make projectile produce forward slashes for windows so that ivy can deduplicate the paths from recentf.
+  (defun my/normalize-projectile-paths (files)
+  "Normalize Windows paths to use forward slashes."
+  (if (eq system-type 'windows-nt)
+      (mapcar (lambda (file)
+                (replace-regexp-in-string "\\\\" "/" file))
+              files)
+    files))
+  (advice-add 'projectile-project-files :filter-return #'my/normalize-projectile-paths)
+
   :bind-keymap
   ("C-c p" . projectile-command-map)
 
