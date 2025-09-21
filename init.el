@@ -376,6 +376,7 @@
 
   :bind-keymap
   ("C-c p" . projectile-command-map)
+  :bind(("C-c r" . my-projectile-related-file))
   )
 
 (use-package markdown-mode
