@@ -819,3 +819,14 @@ Returns the process object on success, nil on failure to start."
              (setq process nil)))
     process))
 
+(defun my-make-file-writable ()
+  "Make the current buffer's file writable (clear read-only file status).
+Works on both Windows and Linux."
+  (interactive)
+  (let ((file (buffer-file-name)))
+    (if (not file)
+        (message "Buffer is not visiting a file!")
+      (set-file-modes file
+                      (file-modes-symbolic-to-number "u+w" (file-modes file)))
+      (read-only-mode -1)
+      (message "File '%s' is now writable." file))))
