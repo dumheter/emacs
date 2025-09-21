@@ -581,23 +581,19 @@ the command simply signals an error."
 (use-package gptel
   :ensure t
   :config
-  ;; If gemini api key is setup, use it as default. Otherwise default to copilot.
-  (let ((gemini-api-key (getenv "GEMINI_API_KEY")))
-	(if gemini-api-key
-		(setq
-         gptel-model 'gemini-2.0-flash
-         gptel-backend (gptel-make-gemini "Gemini" :key gemini-api-key :stream t))
+  (if (string-match "DICE" (system-name))
+	  ;; then
       (setq
-	   gptel-model 'gpt-4o
-	   gptel-backend (gptel-make-gh-copilot "Copilot"))))
-
-  (setq ;;gptel-model 'lmstudio
-		gptel-backend
-		(gptel-make-openai "LM-Studio"
-						   :stream t
-						   :protocol "http"
-						   :host "localhost:1234"
-						   :models '(lmstudio)))
+	   gptel-model 'gemini-2.5-pro
+	   gptel-backend (gptel-make-gh-copilot "Copilot"))
+	;; else
+	(setq gptel-model 'lmstudio
+		  gptel-backend
+		  (gptel-make-openai "LM-Studio"
+			:stream t
+			:protocol "http"
+			:host "localhost:1234"
+			:models '(lmstudio))))
 
   ;; Optional: auto-wrap responses for readability:
   (defun my-gptel-fill-buffer ()
