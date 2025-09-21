@@ -44,18 +44,6 @@
 ;; TODO
 ;; * ai copilot
 
-(menu-bar-mode -1)
-(tool-bar-mode -1)
-(scroll-bar-mode -1)
-(setq inhibit-startup-screen t)
-(setq ring-bell-function 'ignore)
-(setq make-backup-files nil) ;; Disable backup files (file~)
-(setq auto-save-default nil) ;; Disable auto-save files (#file#)
-(setq create-lockfiles nil) ;; Disable lockfiles (.#file)
-(setq backup-inhibited t)
-(setq-default intent-tabs-mode t)
-(setq-default tab-width 4)
-(setq blink-cursor-mode nil)
 
 (require 'package)
 (setq package-archives '(("melpa" . "https://melpa.org/packages/")
@@ -70,33 +58,6 @@
 
 (require 'use-package)
 (setq use-package-always-ensure t)
-
-;; Font
-(cond
- ((string-equal system-type "windows-nt")
-  (progn
-    (add-to-list 'default-frame-alist '(font . "Cascadia Mono PL-9"))
-    (set-face-attribute 'default t
-		        :font "Cascadia Mono PL-9"
-			))))
-
-(cond
- ((string-equal system-type "gnu/linux")
-  (progn
-    (set-face-attribute 'default nil :height 100))))
-
-;; UTF-8 please
-(setq locale-coding-system 'utf-8) ; pretty
-(set-terminal-coding-system 'utf-8) ; pretty
-(set-keyboard-coding-system 'utf-8) ; pretty
-(set-selection-coding-system 'utf-8) ; please
-(prefer-coding-system 'utf-8) ; with sugar on top
-
-;; custom stuff in custom.el
-(setq custom-file (expand-file-name "custom.el" user-emacs-directory))
-(when (file-exists-p custom-file)
-  (load custom-file)
-  )
 
 (use-package warnings
   :ensure nil
@@ -118,6 +79,7 @@
 	 ("C-c f" . recentf)
 	 )
   :custom
+
   (enable-recursive-minibuffers t)
   ;; Hide commands in M-x whihc do not work in current mode. Vertico
   ;; commands are hidden in normal buffers. This setting is usful beyond Vertico.
@@ -125,83 +87,69 @@
   ;; Do now allow the cursor in the minibuffer promp
   (minibuffer-promt-properties
    '(read-only t cursor-intagible t face minibuffer-prompt))
+
   :config
+  (menu-bar-mode -1)
+  (tool-bar-mode -1)
+  (scroll-bar-mode -1)
+  (setq inhibit-startup-screen t)
+  (setq ring-bell-function 'ignore)
+  (setq make-backup-files nil) ;; Disable backup files (file~)
+  (setq auto-save-default nil) ;; Disable auto-save files (#file#)
+  (setq create-lockfiles nil) ;; Disable lockfiles (.#file)
+  (setq backup-inhibited t)
+  (setq-default intent-tabs-mode t)
+  (setq-default tab-width 4)
+  (setq blink-cursor-mode nil)
+
+  ;; UTF-8 please
+  (setq locale-coding-system 'utf-8) ; pretty
+  (set-terminal-coding-system 'utf-8) ; pretty
+  (set-keyboard-coding-system 'utf-8) ; pretty
+  (set-selection-coding-system 'utf-8) ; please
+  (prefer-coding-system 'utf-8) ; with sugar on top
+
+  ;; Font
+  (cond
+   ((string-equal system-type "gnu/linux")
+	(progn
+      (set-face-attribute 'default nil :height 100))))
+
+  (cond
+   ((string-equal system-type "windows-nt")
+	(progn
+      (add-to-list 'default-frame-alist '(font . "Cascadia Mono PL-9"))
+      (set-face-attribute 'default t
+						  :font "Cascadia Mono PL-9"
+						  ))))
+  
   (cond
    ((string-equal system-type "windows-nt")
 	(progn
 	  (set-face-attribute 'fixed-pitch nil :font "Cascadia Mono PL-9")))
    )
+
+  ;; Experimental for linux, is this right?
+  (cond
+   ((string-equal system-type "gnu/linux")
+	(progn
+      (set-face-attribute 'fixed-pitch nil :height 100))))
+
+  ;; custom stuff in custom.el
+  (setq custom-file (expand-file-name "custom.el" user-emacs-directory))
+  (when (file-exists-p custom-file)
+	(load custom-file)
+	)
+
   (setq scroll-conservatively 101) ;; Only scroll one step once cursor leaves window.
   (setq frame-title-format
 		'("Emacs @ " (:eval (if (buffer-file-name)
 							 (abbreviate-file-name (buffer-file-name))
 							 (buffer-name)))))
-  (defun smarter-begining-of-line ()
-    "Move point to first non-whitespace character or beginning of line."
-    (interactive)
-    (let ((pt (point)))
-      (back-to-indentation)
-      (when (eq pt (point))
-		(beginning-of-line))))
+
   (global-hl-line-mode)
   (fset 'yes-or-no-p 'y-or-n-p)
   (delete-selection-mode 1) ;; Deletion commands work on regions.
-
-  (defun mark-sexp-at-point ()
-	"Like running backward-sexp, then forward sexp and mark."
-	(interactive)
-	(forward-sexp)
-	(set-mark-command nil)
-	(backward-sexp))
-
-  (defun move-line-up ()
-	"Move the current line up one line."
-	(interactive)
-	(transpose-lines 1)
-	(forward-line -2)
-	(indent-according-to-mode))
-
-  (defun move-line-down ()
-	"Move the current line down one line."
-	(interactive)
-	(forward-line 1)
-	(transpose-lines 1)
-	(forward-line -1)
-	(indent-according-to-mode))
-
-  (defun copy-file-name ()
-	"Copy the current file's filename to clipboard."
-	(interactive)
-	(if buffer-file-name
-		(progn
-		  (kill-new buffer-file-name)
-		  buffer-file-name)
-	  nill))
-
-  (defun create-cpp-include (file-path)
-	"Create a c++ include from file path."
-	(interactive "fFile path: ")
-	(let* ((normalized-path (replace-regexp-in-string "\\\\" "/" file-path))
-		   (public-pos (string-match "/Public/" normalized-path))
-		   (code-pos (string-match "/Code/" normalized-path))
-		   (include-path
-			(cond
-			 (public-pos
-			  (substring normalized-path
-						 (+ public-pos (length "/Public/"))))
-			 (code-pos
-			  (substring normalized-path
-						 (+ code-pos (length "/Code/"))))
-			 (t normalized-path))))
-	  (kill-new (format "#include <%s>" include-path)))
-	)
-
-  (defun create-cpp-include-from-current-buffer ()
-	"Create a c++ include for the current buffer."
-	(interactive)
-	(create-cpp-include (copy-file-name))
-	)
-					  
   )
 
 (use-package recentf
@@ -213,28 +161,6 @@
   (setq recentf-max-saved-items 5000) ;; keep many things in recentf
   (setq recentf-save-file "~/.emacs.d/recentf")
   )
-
-(defun my-projectile-configure-project ()
-  "Configure the current project using CMake with Ninja for Debug build."
-  (interactive)
-  (let ((compilation-read-command nil) ;; disable prompt
-        (command-map (if (projectile--cache-project-commands-p) projectile-compilation-cmd-map)))
-    (projectile--run-project-cmd "cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE=Debug -G \"Ninja\" -B build" command-map
-                                 :show-prompt t
-                                 :prompt-prefix "Compile command: "
-                                 :save-buffers t
-                                 :use-comint-mode projectile-compile-use-comint-mode)))
-
-(defun my-projectile-build-project ()
-  "Compile the current project using 'cmake --build build'."
-  (interactive)
-  (let ((compilation-read-command nil) ;; disable prompt
-        (command-map (if (projectile--cache-project-commands-p) projectile-compilation-cmd-map)))
-    (projectile--run-project-cmd "cmake --build build" command-map
-                                 :show-prompt nil
-                                 :prompt-prefix "Compile command: "
-                                 :save-buffers t
-                                 :use-comint-mode projectile-compile-use-comint-mode)))
 
 (use-package cc-mode
   ;; Don't indent after namespace.
@@ -450,59 +376,6 @@
 
   :bind-keymap
   ("C-c p" . projectile-command-map)
-
-  :custom
-  (defun my/projectile-related-file ()
-    "Open the C++ file that corresponds to the one you are editing.
-
-If the current buffer is visiting `foo.cpp` this command will look for
-`foo.hpp`; if it is visiting `bar.hpp` it will look for `bar.cpp`.
-
-* If exactly one match exists – open it automatically.
-* If several matches exist – present a completing‑read list so you can pick.
-
-The search is performed in the current Projectile project.  If the file
-is not part of a Projectile project or has an unsupported extension,
-the command simply signals an error."
-    (interactive)
-    ;; 1. Grab the name/extension of the current buffer.
-    (let* ((buf-file   (buffer-file-name))
-           (ext        (and buf-file (file-name-extension buf-file)))
-           (base       (and ext (file-name-base buf-file))))
-      (unless (and base
-                   (member ext '("cpp" "hpp")))
-        (user-error "This command only works on .cpp or .hpp files"))
-
-      ;; 2. Compute the target extension and build a matcher.
-      (let* ((target-ext (if (string= ext "cpp") "hpp" "cpp"))
-             (project-root   (or (projectile-acquire-root)
-                                 (user-error "Not in a Projectile project")))
-             (all-files      (projectile-project-files project-root))
-             ;; Keep only files that share the same base name and have the
-             ;; desired target extension.
-             (candidates     (cl-remove-if-not
-                              (lambda (f)
-                                (and (string= (file-name-extension f) target-ext)
-                                     (string= (file-name-base f) base)))
-                              all-files)))
-
-        (cond
-         ((null candidates)
-          (user-error "No %s file found for `%s`" target-ext base))
-
-         ((= (length candidates) 1)
-          ;; One match – open it directly.
-          (find-file (expand-file-name (car candidates) project-root))
-          (message "Opened %s" (car candidates)))
-
-         (t
-          ;; Multiple matches – ask the user to pick one.
-          (let ((choice (projectile-completing-read
-                         (format "Select %s: " target-ext)
-                         candidates)))
-            (when choice
-              (find-file (expand-file-name choice project-root))
-              (message "Opened %s" choice))))))))
   )
 
 (use-package markdown-mode
@@ -526,7 +399,7 @@ the command simply signals an error."
         ("C-c y n" . yas-new-snippet)           ;; Create a new snippet
         ("C-c y v" . yas-visit-snippet-file)    ;; Edit a snippet
         ("C-c y l" . yas-describe-tables))      ;; List available snippets
-  )
+  )
 
 (use-package rg
   :ensure t
@@ -826,3 +699,141 @@ Works on both Windows and Linux."
                       (file-modes-symbolic-to-number "u+w" (file-modes file)))
       (read-only-mode -1)
       (message "File '%s' is now writable." file))))
+
+(defun my-projectile-related-file ()
+  "Open the C++ file that corresponds to the one you are editing.
+
+If the current buffer is visiting `foo.cpp` this command will look for
+`foo.hpp`; if it is visiting `bar.hpp` it will look for `bar.cpp`.
+
+* If exactly one match exists – open it automatically.
+* If several matches exist – present a completing‑read list so you can pick.
+
+The search is performed in the current Projectile project.  If the file
+is not part of a Projectile project or has an unsupported extension,
+the command simply signals an error."
+  (interactive)
+  ;; 1. Grab the name/extension of the current buffer.
+  (let* ((buf-file   (buffer-file-name))
+         (ext        (and buf-file (file-name-extension buf-file)))
+         (base       (and ext (file-name-base buf-file))))
+    (unless (and base
+                 (member ext '("cpp" "hpp")))
+      (user-error "This command only works on .cpp or .hpp files"))
+
+    ;; 2. Compute the target extension and build a matcher.
+    (let* ((target-ext (if (string= ext "cpp") "hpp" "cpp"))
+           (project-root   (or (projectile-acquire-root)
+                               (user-error "Not in a Projectile project")))
+           (all-files      (projectile-project-files project-root))
+           ;; Keep only files that share the same base name and have the
+           ;; desired target extension.
+           (candidates     (cl-remove-if-not
+                            (lambda (f)
+                              (and (string= (file-name-extension f) target-ext)
+                                   (string= (file-name-base f) base)))
+                            all-files)))
+
+      (cond
+       ((null candidates)
+        (user-error "No %s file found for `%s`" target-ext base))
+
+       ((= (length candidates) 1)
+        ;; One match – open it directly.
+        (find-file (expand-file-name (car candidates) project-root))
+        (message "Opened %s" (car candidates)))
+
+       (t
+        ;; Multiple matches – ask the user to pick one.
+        (let ((choice (projectile-completing-read
+                       (format "Select %s: " target-ext)
+                       candidates)))
+          (when choice
+            (find-file (expand-file-name choice project-root))
+            (message "Opened %s" choice))))))))
+
+(defun my-projectile-configure-project ()
+  "Configure the current project using CMake with Ninja for Debug build."
+  (interactive)
+  (let ((compilation-read-command nil) ;; disable prompt
+        (command-map (if (projectile--cache-project-commands-p) projectile-compilation-cmd-map)))
+    (projectile--run-project-cmd "cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE=Debug -G \"Ninja\" -B build" command-map
+                                 :show-prompt t
+                                 :prompt-prefix "Compile command: "
+                                 :save-buffers t
+                                 :use-comint-mode projectile-compile-use-comint-mode)))
+
+(defun my-projectile-build-project ()
+  "Compile the current project using 'cmake --build build'."
+  (interactive)
+  (let ((compilation-read-command nil) ;; disable prompt
+        (command-map (if (projectile--cache-project-commands-p) projectile-compilation-cmd-map)))
+    (projectile--run-project-cmd "cmake --build build" command-map
+                                 :show-prompt nil
+                                 :prompt-prefix "Compile command: "
+                                 :save-buffers t
+                                 :use-comint-mode projectile-compile-use-comint-mode)))
+
+(defun smarter-begining-of-line ()
+  "Move point to first non-whitespace character or beginning of line."
+  (interactive)
+  (let ((pt (point)))
+    (back-to-indentation)
+    (when (eq pt (point))
+	  (beginning-of-line))))
+
+
+(defun mark-sexp-at-point ()
+  "Like running backward-sexp, then forward sexp and mark."
+  (interactive)
+  (forward-sexp)
+  (set-mark-command nil)
+  (backward-sexp))
+
+(defun move-line-up ()
+  "Move the current line up one line."
+  (interactive)
+  (transpose-lines 1)
+  (forward-line -2)
+  (indent-according-to-mode))
+
+(defun move-line-down ()
+  "Move the current line down one line."
+  (interactive)
+  (forward-line 1)
+  (transpose-lines 1)
+  (forward-line -1)
+  (indent-according-to-mode))
+
+(defun copy-file-name ()
+  "Copy the current file's filename to clipboard."
+  (interactive)
+  (if buffer-file-name
+	  (progn
+		(kill-new buffer-file-name)
+		buffer-file-name)
+	nill))
+
+(defun create-cpp-include (file-path)
+  "Create a c++ include from file path."
+  (interactive "fFile path: ")
+  (let* ((normalized-path (replace-regexp-in-string "\\\\" "/" file-path))
+		 (public-pos (string-match "/Public/" normalized-path))
+		 (code-pos (string-match "/Code/" normalized-path))
+		 (include-path
+		  (cond
+		   (public-pos
+			(substring normalized-path
+					   (+ public-pos (length "/Public/"))))
+		   (code-pos
+			(substring normalized-path
+					   (+ code-pos (length "/Code/"))))
+		   (t normalized-path))))
+	(kill-new (format "#include <%s>" include-path)))
+  )
+
+(defun create-cpp-include-from-current-buffer ()
+  "Create a c++ include for the current buffer."
+  (interactive)
+  (create-cpp-include (copy-file-name))
+  )
