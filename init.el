@@ -364,16 +364,6 @@
   ;;(setq projectile-generic-command "fd -e cpp -e h -e ddf -tf --color=never")
   (projectile-mode +1)
 
-  ;; Make projectile produce forward slashes for windows so that ivy can deduplicate the paths from recentf.
-  (defun my/normalize-projectile-paths (files)
-  "Normalize Windows paths to use forward slashes."
-  (if (eq system-type 'windows-nt)
-      (mapcar (lambda (file)
-                (replace-regexp-in-string "\\\\" "/" file))
-              files)
-    files))
-  (advice-add 'projectile-project-files :filter-return #'my/normalize-projectile-paths)
-
   :bind-keymap
   ("C-c p" . projectile-command-map)
   :bind(("C-c r" . my-projectile-related-file))
@@ -705,7 +695,8 @@ Works on both Windows and Linux."
   "Open the C++ file that corresponds to the one you are editing.
 
 If the current buffer is visiting `foo.cpp` this command will look for
-`foo.hpp`; if it is visiting `bar.hpp` it will look for `bar.cpp`.
+`foo.hpp` or `foo.h`; if it is visiting `bar.hpp` or `bar.h` it will look
+for `bar.cpp`.
 
 * If exactly one match exists – open it automatically.
 * If several matches exist – present a completing‑read list so you can pick.
@@ -719,25 +710,27 @@ the command simply signals an error."
          (ext        (and buf-file (file-name-extension buf-file)))
          (base       (and ext (file-name-base buf-file))))
     (unless (and base
-                 (member ext '("cpp" "hpp")))
-      (user-error "This command only works on .cpp or .hpp files"))
+                 (member ext '("cpp" "hpp" "h")))
+      (user-error "This command only works on .cpp, .hpp, or .h files"))
 
-    ;; 2. Compute the target extension and build a matcher.
-    (let* ((target-ext (if (string= ext "cpp") "hpp" "cpp"))
+    ;; 2. Compute the target extension(s) and build a matcher.
+    (let* ((target-exts (if (string= ext "cpp")
+                            '("hpp" "h")
+                          '("cpp")))
            (project-root   (or (projectile-acquire-root)
                                (user-error "Not in a Projectile project")))
            (all-files      (projectile-project-files project-root))
-           ;; Keep only files that share the same base name and have the
+           ;; Keep only files that share the same base name and have a
            ;; desired target extension.
            (candidates     (cl-remove-if-not
                             (lambda (f)
-                              (and (string= (file-name-extension f) target-ext)
+                              (and (member (file-name-extension f) target-exts)
                                    (string= (file-name-base f) base)))
                             all-files)))
 
       (cond
        ((null candidates)
-        (user-error "No %s file found for `%s`" target-ext base))
+        (user-error "No corresponding file found for `%s`" base))
 
        ((= (length candidates) 1)
         ;; One match – open it directly.
@@ -747,7 +740,7 @@ the command simply signals an error."
        (t
         ;; Multiple matches – ask the user to pick one.
         (let ((choice (projectile-completing-read
-                       (format "Select %s: " target-ext)
+                       "Select file: "
                        candidates)))
           (when choice
             (find-file (expand-file-name choice project-root))
