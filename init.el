@@ -160,6 +160,16 @@
   :config
   (setq recentf-max-saved-items 5000) ;; keep many things in recentf
   (setq recentf-save-file "~/.emacs.d/recentf")
+
+  ;; Convert slashes to OS-native format before saving the recentf list.
+  (defun my-recentf-convert-slashes-for-saving ()
+    "Convert file paths in `recentf-list` to native format for Windows."
+    (when (string-equal system-type "windows-nt")
+      (setq recentf-list
+            (mapcar (lambda (file) (replace-regexp-in-string "/" "\\\\" file t t))
+                    recentf-list))))
+
+  (add-hook 'recentf-pre-save-hook #'my-recentf-convert-slashes-for-saving)
   )
 
 (use-package cc-mode
@@ -717,15 +727,19 @@ the command simply signals an error."
     (let* ((target-exts (if (string= ext "cpp")
                             '("hpp" "h")
                           '("cpp")))
+           (target-bases (if (and (string= ext "cpp")
+                                  (string-suffix-p "Impl" base))
+                             (list base (string-remove-suffix "Impl" base))
+                           (list base)))
            (project-root   (or (projectile-acquire-root)
                                (user-error "Not in a Projectile project")))
            (all-files      (projectile-project-files project-root))
-           ;; Keep only files that share the same base name and have a
+           ;; Keep only files that share a target base name and have a
            ;; desired target extension.
            (candidates     (cl-remove-if-not
                             (lambda (f)
                               (and (member (file-name-extension f) target-exts)
-                                   (string= (file-name-base f) base)))
+                                   (member (file-name-base f) target-bases)))
                             all-files)))
 
       (cond
