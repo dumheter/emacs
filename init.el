@@ -704,16 +704,16 @@ Works on both Windows and Linux."
 (defun my-projectile-related-file ()
   "Open the C++ file that corresponds to the one you are editing.
 
-If the current buffer is visiting `foo.cpp` this command will look for
-`foo.hpp` or `foo.h`; if it is visiting `bar.hpp` or `bar.h` it will look
-for `bar.cpp`.
+This command switches between source and header files, handling
+`Impl` suffixes. For example, it can switch between `Foo.h` and
+`Foo.cpp` or `FooImpl.cpp`.
 
 * If exactly one match exists – open it automatically.
-* If several matches exist – present a completing‑read list so you can pick.
+* If several matches exist – present a completing-read list.
 
-The search is performed in the current Projectile project.  If the file
-is not part of a Projectile project or has an unsupported extension,
-the command simply signals an error."
+The search is performed in the current Projectile project. If the
+file is not part of a project or has an unsupported extension,
+the command signals an error."
   (interactive)
   ;; 1. Grab the name/extension of the current buffer.
   (let* ((buf-file   (buffer-file-name))
@@ -723,19 +723,17 @@ the command simply signals an error."
                  (member ext '("cpp" "hpp" "h")))
       (user-error "This command only works on .cpp, .hpp, or .h files"))
 
-    ;; 2. Compute the target extension(s) and build a matcher.
+    ;; 2. Compute target extensions and base names.
     (let* ((target-exts (if (string= ext "cpp")
                             '("hpp" "h")
                           '("cpp")))
-           (target-bases (if (and (string= ext "cpp")
-                                  (string-suffix-p "Impl" base))
+           (target-bases (if (string-suffix-p "Impl" base)
                              (list base (string-remove-suffix "Impl" base))
-                           (list base)))
+                           (list base (concat base "Impl"))))
            (project-root   (or (projectile-acquire-root)
                                (user-error "Not in a Projectile project")))
            (all-files      (projectile-project-files project-root))
-           ;; Keep only files that share a target base name and have a
-           ;; desired target extension.
+           ;; Keep files with a target base name and extension.
            (candidates     (cl-remove-if-not
                             (lambda (f)
                               (and (member (file-name-extension f) target-exts)
@@ -747,15 +745,11 @@ the command simply signals an error."
         (user-error "No corresponding file found for `%s`" base))
 
        ((= (length candidates) 1)
-        ;; One match – open it directly.
         (find-file (expand-file-name (car candidates) project-root))
         (message "Opened %s" (car candidates)))
 
        (t
-        ;; Multiple matches – ask the user to pick one.
-        (let ((choice (projectile-completing-read
-                       "Select file: "
-                       candidates)))
+        (let ((choice (completing-read "Select file: " candidates nil t)))
           (when choice
             (find-file (expand-file-name choice project-root))
             (message "Opened %s" choice))))))))
