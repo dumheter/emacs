@@ -175,9 +175,9 @@
 (use-package cc-mode
   ;; Don't indent after namespace.
   :mode("\\.ixx\\'" . c++-mode)
-  :bind(:map c-mode-base-map
-			 ("C-c n" . my-projectile-build-project)
-			 ("C-c l" . my-projectile-configure-project))
+;;  :bind(:map c-mode-base-map
+;;			 ("C-c n" . my-projectile-build-project)
+;;			 ("C-c l" . my-projectile-configure-project))
   :hook (c++-mode . (lambda ()
 					  (c-set-offset 'innamespace 0)
 					  (c-set-offset 'namespace-open 0)
@@ -429,12 +429,24 @@
   (clipmon-mode-start)
   )
 
+(defvar my-lsp-bridge-map (make-sparse-keymap)
+  "Keymap for my custom lsp-bridge bindings.")
+
 (use-package lsp-bridge
   :load-path "~/lsp-bridge"
   :demand t
   :bind
   (("M-." . my-lsp-bridge-find-def-with-xref)
-	)
+   )
+  :init
+  (define-key global-map (kbd "C-c l") my-lsp-bridge-map)
+  (define-key my-lsp-bridge-map (kbd "p") #'lsp-bridge-peek)
+  (define-key my-lsp-bridge-map (kbd "w") #'lsp-bridge-rename)
+  (define-key my-lsp-bridge-map (kbd "a") #'lsp-bridge-code-action)
+  (define-key my-lsp-bridge-map (kbd "r") #'lsp-bridge-find-references)
+  (define-key my-lsp-bridge-map (kbd "f") #'lsp-bridge-code-format)
+  (define-key my-lsp-bridge-map (kbd "q") #'lsp-bridge-restart-process)
+
   :config
   (setq lsp-bridge-enable-signature-help t)
   (global-lsp-bridge-mode)
@@ -499,9 +511,10 @@
 
 (use-package cmake-mode
   :ensure t
-  :bind (:map cmake-mode-map
-			 ("C-c n" . my-projectile-build-project)
-			 ("C-c l" . my-projectile-configure-project)))
+;;  :bind (:map cmake-mode-map
+;;			 ("C-c n" . my-projectile-build-project)
+;;			 ("C-c l" . my-projectile-configure-project))
+  )
 
 (use-package ace-jump-mode
   :ensure t
