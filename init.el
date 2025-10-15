@@ -429,7 +429,7 @@
   (clipmon-mode-start)
   )
 
-(defvar my-lsp-bridge-map (make-sparse-keymap)
+(defvar my-lsp-bridge-keymap (make-sparse-keymap)
   "Keymap for my custom lsp-bridge bindings.")
 
 (use-package lsp-bridge
@@ -439,13 +439,13 @@
   (("M-." . my-lsp-bridge-find-def-with-xref)
    )
   :init
-  (define-key global-map (kbd "C-c l") my-lsp-bridge-map)
-  (define-key my-lsp-bridge-map (kbd "p") #'lsp-bridge-peek)
-  (define-key my-lsp-bridge-map (kbd "w") #'lsp-bridge-rename)
-  (define-key my-lsp-bridge-map (kbd "a") #'lsp-bridge-code-action)
-  (define-key my-lsp-bridge-map (kbd "r") #'lsp-bridge-find-references)
-  (define-key my-lsp-bridge-map (kbd "f") #'lsp-bridge-code-format)
-  (define-key my-lsp-bridge-map (kbd "q") #'lsp-bridge-restart-process)
+  (define-key global-map (kbd "C-c l") my-lsp-bridge-keymap)
+  (define-key my-lsp-bridge-keymap (kbd "p") #'lsp-bridge-peek)
+  (define-key my-lsp-bridge-keymap (kbd "w") #'lsp-bridge-rename)
+  (define-key my-lsp-bridge-keymap (kbd "a") #'lsp-bridge-code-action)
+  (define-key my-lsp-bridge-keymap (kbd "r") #'lsp-bridge-find-references)
+  (define-key my-lsp-bridge-keymap (kbd "f") #'lsp-bridge-code-format)
+  (define-key my-lsp-bridge-keymap (kbd "q") #'lsp-bridge-restart-process)
 
   :config
   (setq lsp-bridge-enable-signature-help t)
@@ -464,6 +464,9 @@
   :ensure t
   )
 
+(defvar my-gptel-keymap (make-sparse-keymap)
+  "Keymap for my custom gptel bindings.")
+
 (use-package gptel
   :ensure t
   :config
@@ -480,12 +483,17 @@
 			:protocol "http"
 			:host "localhost:1234"
 			:models '(lmstudio))))
-
   ;; Optional: auto-wrap responses for readability:
   (defun my-gptel-fill-buffer ()
     (save-excursion
       (fill-region (point-min) (point-max))))
   (add-hook 'gptel-post-response-hook #'my-gptel-fill-buffer)
+  :init
+  (define-key global-map (kbd "C-c e") my-gptel-keymap)
+  (define-key my-gptel-keymap (kbd "e") #'gptel)
+  (define-key my-gptel-keymap (kbd "m") #'gptel-menu)
+  (define-key my-gptel-keymap (kbd "r") #'gptel-rewrite)
+  (define-key my-gptel-keymap (kbd "w") #'gptel-context-remove-all)
   )
 
 (use-package org
