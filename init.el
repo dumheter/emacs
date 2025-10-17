@@ -491,6 +491,7 @@
   :init
   (define-key global-map (kbd "C-c e") my-gptel-keymap)
   (define-key my-gptel-keymap (kbd "e") #'gptel)
+  (define-key my-gptel-keymap (kbd "a") #'gptel-add)
   (define-key my-gptel-keymap (kbd "m") #'gptel-menu)
   (define-key my-gptel-keymap (kbd "r") #'gptel-rewrite)
   (define-key my-gptel-keymap (kbd "w") #'gptel-context-remove-all)
