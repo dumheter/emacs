@@ -500,9 +500,9 @@
 	:stream t
 	:protocol "https"
 	:host "api.z.ai"
-	:endpoint "api/paas/v4/chat/completions" ;; /api/coding/paas/v4 
-	:key (lambda () (getenv "ZAI_API_KEY"))
-	:models '("glm-4.6" "glm-4.5" "glm-4.5-air")
+	:endpoint "/api/paas/v4/chat/completions"
+	:key (getenv "ZAI_API_KEY")
+	:models '(glm-4.6 glm-4.5 glm-4.5-air)
 	)
 
   (add-hook 'gptel-post-response-hook #'my-gptel-fill-buffer)
