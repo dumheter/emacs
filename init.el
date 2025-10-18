@@ -77,6 +77,7 @@
 	 ("C-S-<down>" . move-line-down)
 	 ("M-C-SPC" . mark-sexp-at-point)
 	 ("C-c f" . recentf)
+	 ("C-c g" . revert-buffer)
 	 )
   :custom
 
@@ -469,6 +470,13 @@
 
 (use-package gptel
   :ensure t
+  :init
+  (define-key global-map (kbd "C-c e") my-gptel-keymap)
+  (define-key my-gptel-keymap (kbd "e") #'gptel)
+  (define-key my-gptel-keymap (kbd "a") #'gptel-add)
+  (define-key my-gptel-keymap (kbd "m") #'gptel-menu)
+  (define-key my-gptel-keymap (kbd "r") #'gptel-rewrite)
+  (define-key my-gptel-keymap (kbd "w") #'gptel-context-remove-all)
   :config
   (if (string-match "DICE" (system-name))
 	  ;; then
@@ -487,14 +495,17 @@
   (defun my-gptel-fill-buffer ()
     (save-excursion
       (fill-region (point-min) (point-max))))
+  (gptel-make-openai
+	 "zai"
+	:stream t
+	:protocol "https"
+	:host "api.z.ai"
+	:endpoint "api/paas/v4/chat/completions" ;; /api/coding/paas/v4 
+	:key (lambda () (getenv "ZAI_API_KEY"))
+	:models '("glm-4.6" "glm-4.5" "glm-4.5-air")
+	)
+
   (add-hook 'gptel-post-response-hook #'my-gptel-fill-buffer)
-  :init
-  (define-key global-map (kbd "C-c e") my-gptel-keymap)
-  (define-key my-gptel-keymap (kbd "e") #'gptel)
-  (define-key my-gptel-keymap (kbd "a") #'gptel-add)
-  (define-key my-gptel-keymap (kbd "m") #'gptel-menu)
-  (define-key my-gptel-keymap (kbd "r") #'gptel-rewrite)
-  (define-key my-gptel-keymap (kbd "w") #'gptel-context-remove-all)
   )
 
 (use-package org
