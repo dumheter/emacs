@@ -441,12 +441,14 @@
    )
   :init
   (define-key global-map (kbd "C-c l") my-lsp-bridge-keymap)
-  (define-key my-lsp-bridge-keymap (kbd "p") #'lsp-bridge-peek)
+  (define-key my-lsp-bridge-keymap (kbd "q") #'lsp-bridge-restart-process)
   (define-key my-lsp-bridge-keymap (kbd "w") #'lsp-bridge-rename)
+  (define-key my-lsp-bridge-keymap (kbd "f") #'lsp-bridge-code-format)
+  (define-key my-lsp-bridge-keymap (kbd "p") #'lsp-bridge-peek)
   (define-key my-lsp-bridge-keymap (kbd "a") #'lsp-bridge-code-action)
   (define-key my-lsp-bridge-keymap (kbd "r") #'lsp-bridge-find-references)
-  (define-key my-lsp-bridge-keymap (kbd "f") #'lsp-bridge-code-format)
-  (define-key my-lsp-bridge-keymap (kbd "q") #'lsp-bridge-restart-process)
+  (define-key my-lsp-bridge-keymap (kbd "s") #'lsp-bridge-workspace-list-symbol-at-point)
+  (define-key my-lsp-bridge-keymap (kbd "t") #'lsp-bridge-workspace-list-symbols)
 
   :config
   (setq lsp-bridge-enable-signature-help t)
