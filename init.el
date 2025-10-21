@@ -474,11 +474,12 @@
   :ensure t
   :init
   (define-key global-map (kbd "C-c e") my-gptel-keymap)
-  (define-key my-gptel-keymap (kbd "e") #'gptel)
+  (define-key my-gptel-keymap (kbd "q") #'gptel-abort)
+  (define-key my-gptel-keymap (kbd "c") #'gptel-context-remove-all)
   (define-key my-gptel-keymap (kbd "a") #'gptel-add)
-  (define-key my-gptel-keymap (kbd "m") #'gptel-menu)
   (define-key my-gptel-keymap (kbd "r") #'gptel-rewrite)
-  (define-key my-gptel-keymap (kbd "w") #'gptel-context-remove-all)
+  (define-key my-gptel-keymap (kbd "e") #'gptel)
+  (define-key my-gptel-keymap (kbd "m") #'gptel-menu)
   :config
   (if (string-match "DICE" (system-name))
 	  ;; then
