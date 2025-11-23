@@ -413,6 +413,17 @@
   :ensure t
   )
 
+(use-package git-gutter
+  :ensure t
+  :config
+  (global-git-gutter-mode +1)
+  :custom
+  ;; Update git-gutter markers on save
+  (git-gutter:update-interval 2)
+  ;; Show diff stat in mode-line
+  (git-gutter:hide-gutter nil)
+  )
+
 (use-package editorconfig
   :ensure t
   :config
