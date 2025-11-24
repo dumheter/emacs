@@ -367,6 +367,7 @@
 
 (use-package projectile
   :ensure t
+  :demand t
   :config
   (setq projectile-enable-caching 'persistent)
   (setq projectile-cache-file "~/.emacs.d/projectile.cache")
@@ -414,14 +415,14 @@
 (defun my-rg-dwim ()
   "Wrapper for rg-dwim that searches in projectile-root/code/DICE/extensions if in TnT project."
   (interactive)
-  (let* ((project-root (projectile-project-root)))
-    (if (and project-root (string-match-p "/TnT/" project-root))
-        ;; We're in a TnT project - apply custom behavior
-        (let ((extensions-dir (expand-file-name "code/DICE/extensions" project-root)))
-          (cl-letf (((symbol-function 'rg-project-root)
-                     (lambda (_file) extensions-dir)))
-            (call-interactively 'rg-dwim)))
-      ;; Not in TnT - call rg-dwim directly
+  (let* ((project-root (projectile-project-root))
+         (target-dir 
+          (if (and project-root (string-match-p "TnT" project-root))
+              (expand-file-name "code/DICE/extensions" project-root)
+            project-root)))
+    ;; Temporarily override rg-project-root to return our target directory
+    (cl-letf (((symbol-function 'rg-project-root) 
+               (lambda (&rest _) target-dir)))
       (call-interactively 'rg-dwim))))
 
 (use-package p4
