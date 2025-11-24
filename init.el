@@ -405,10 +405,24 @@
 
 (use-package rg
   :ensure t
-  :bind (("M-s s" . rg-dwim))
+  :bind (("M-s s" . my-rg-dwim))
   :config
   (rg-enable-default-bindings)
+  (setq compilation-always-kill t)
   )
+
+(defun my-rg-dwim ()
+  "Wrapper for rg-dwim that searches in projectile-root/code/DICE/extensions if in TnT project."
+  (interactive)
+  (let* ((project-root (projectile-project-root)))
+    (if (and project-root (string-match-p "/TnT/" project-root))
+        ;; We're in a TnT project - apply custom behavior
+        (let ((extensions-dir (expand-file-name "code/DICE/extensions" project-root)))
+          (cl-letf (((symbol-function 'rg-project-root)
+                     (lambda (_file) extensions-dir)))
+            (call-interactively 'rg-dwim)))
+      ;; Not in TnT - call rg-dwim directly
+      (call-interactively 'rg-dwim))))
 
 (use-package p4
   :ensure t
