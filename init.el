@@ -405,7 +405,7 @@
 
 (use-package rg
   :ensure t
-  :bind (("M-s s" . rg))
+  :bind (("M-s s" . rg-dwim))
   :config
   (rg-enable-default-bindings)
   )
