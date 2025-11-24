@@ -405,6 +405,7 @@
 
 (use-package rg
   :ensure t
+  :bind (("M-s s" . rg))
   :config
   (rg-enable-default-bindings)
   )
