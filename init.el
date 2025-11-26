@@ -148,6 +148,16 @@
 							 (abbreviate-file-name (buffer-file-name))
 							 (buffer-name)))))
 
+  ;; Hide ^M characters from DOS line endings
+  (defun remove-dos-eol ()
+    "Do not show ^M in files containing mixed UNIX and DOS line endings."
+    (interactive)
+    (setq buffer-display-table (make-display-table))
+    (aset buffer-display-table ?\^M []))
+
+  ;; Automatically hide ^M in all buffers
+  (add-hook 'find-file-hook 'remove-dos-eol)
+
   (global-hl-line-mode)
   (fset 'yes-or-no-p 'y-or-n-p)
   (delete-selection-mode 1) ;; Deletion commands work on regions.
