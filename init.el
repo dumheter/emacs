@@ -450,6 +450,12 @@
   (git-gutter:hide-gutter nil)
   )
 
+(use-package magit
+  :ensure t
+  :bind (("C-x g" . magit-status)
+         ("C-x M-g" . magit-dispatch))
+  )
+
 (use-package editorconfig
   :ensure t
   :config
