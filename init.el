@@ -511,7 +511,7 @@
   (if (string-match "DICE" (system-name))
 	  ;; then
       (setq
-	   gptel-model 'gemini-2.5-pro
+	   gptel-model 'claude-sonnet-4.5
 	   gptel-backend (gptel-make-gh-copilot "Copilot"))
 	;; else
 	(setq gptel-model 'lmstudio
