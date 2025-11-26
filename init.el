@@ -506,10 +506,6 @@
 	(lsp-bridge-find-def))
   )
 
-(use-package copilot-chat
-  :ensure t
-  )
-
 (defvar my-gptel-keymap (make-sparse-keymap)
   "Keymap for my custom gptel bindings.")
 
