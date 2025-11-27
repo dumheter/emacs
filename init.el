@@ -450,6 +450,11 @@
   (git-gutter:hide-gutter nil)
   )
 
+;; Dependency for magit, fails to install it on its own.
+(use-package with-editor
+  :ensure t
+  )
+
 (use-package magit
   :ensure t
   :bind (("C-x g" . magit-status)
