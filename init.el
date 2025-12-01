@@ -559,9 +559,11 @@
   :hook (org-mode . visual-line-mode)
   )
 
-(use-package auto-highlight-symbol
+(use-package symbol-overlay
+  :ensure t
   :config
-  (global-auto-highlight-symbol-mode t)
+  (global-set-key (kbd "M-i") symbol-overlay-map)
+  (define-key symbol-overlay-map (kbd "c") 'symbol-overlay-remove-all)
   )
 
 (use-package lua-mode
