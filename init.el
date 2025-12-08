@@ -185,7 +185,8 @@
 
 (use-package cc-mode
   ;; Don't indent after namespace.
-  :mode("\\.ixx\\'" . c++-mode)
+  :mode (("\\.ixx\\'" . c++-mode)
+         ("\\.h\\'" . c++-mode))
 ;;  :bind(:map c-mode-base-map
 ;;			 ("C-c n" . my-projectile-build-project)
 ;;			 ("C-c l" . my-projectile-configure-project))
