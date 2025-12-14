@@ -611,7 +611,7 @@
 (use-package treesit-utils
   :ensure nil
   :bind(
-		("M-s M-s" . my-find-symbols)
+		("M-s M-s" . treesit-utils-find-symbols)
 		)
   )
 

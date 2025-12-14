@@ -259,6 +259,7 @@ Checks in-memory cache first, then disk cache, then scans project."
     (let ((file (plist-get sym :file))
           (line (plist-get sym :line)))
       (when (and file line (file-exists-p file))
+        (xref-push-marker-stack)
         (find-file file)
         (goto-char (point-min))
         (forward-line (1- line))
