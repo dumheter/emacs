@@ -15,8 +15,8 @@
 (defvar treesit-utils-symbols-cache (make-hash-table :test 'equal)
   "Cache for C++ symbols, keyed by project root.")
 
-(defvar treesit-utils-symbols-cache-duration 600
-  "Cache validity duration in seconds (default 10 minutes).")
+(defvar treesit-utils-symbols-cache-duration (* 30 24 60 60)
+  "Cache validity duration in seconds (default 30 days).")
 
 (defvar treesit-utils-symbols-cache-dir ".cache"
   "Subdirectory within project root for cache files.")
