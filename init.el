@@ -607,7 +607,14 @@
   )
 
 ;; Load tree-sitter utilities (C++ symbol browsing with consult)
-(load (expand-file-name "treesit-utils.el" user-emacs-directory))
+(load (expand-file-name "treesit-utils" user-emacs-directory))
+(use-package treesit-utils
+  :ensure nil
+  :bind(
+		("M-s M-s" . my-find-symbols)
+		)
+  )
+
 
 ;; -------------------------------------------------------------------
 ;; run-exe
