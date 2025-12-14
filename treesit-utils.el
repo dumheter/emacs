@@ -24,6 +24,16 @@
 (defvar my-cpp-symbols--lookup-table nil
   "Hash table mapping display strings to symbol plists for current session.")
 
+(defun my-cpp-symbols--search-directory (project-root)
+  "Return the directory to search for C++ files in PROJECT-ROOT.
+If PROJECT-ROOT is named \"TnT\", use `my-cpp-symbols-search-subdir'.
+Otherwise, search in PROJECT-ROOT itself."
+  (let ((project-name (file-name-nondirectory
+                       (directory-file-name project-root))))
+    (if (string= project-name "TnT")
+        (expand-file-name my-cpp-symbols-search-subdir project-root)
+      (expand-file-name "." project-root))))
+
 ;; --- Tree-sitter Query ---
 
 (defvar my-cpp-symbols--query nil
@@ -115,9 +125,7 @@
 (defun my-cpp-symbols--scan-project (project-root)
   "Scan C++ files in PROJECT-ROOT and return list of symbols."
   (my-cpp-symbols--ensure-query)
-  (let* ((search-dir (expand-file-name
-                      my-cpp-symbols-search-subdir
-                      project-root))
+  (let* ((search-dir (my-cpp-symbols--search-directory project-root))
          (files (when (file-directory-p search-dir)
                   (directory-files-recursively
                    search-dir
