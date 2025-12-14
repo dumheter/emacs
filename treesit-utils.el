@@ -207,21 +207,48 @@ Otherwise, search in PROJECT-ROOT itself."
         (forward-line (1- line))
         (recenter)))))
 
+(defvar my-cpp-symbols-preview-delay 0.5
+  "Delay in seconds before previewing a symbol.")
+
+(defvar my-cpp-symbols--preview-timer nil
+  "Timer for delayed preview.")
+
 (defun my-cpp-symbols--state ()
-  "State function for consult preview."
-  (let ((open-buffers (buffer-list)))
+  "State function for consult preview with debounced file loading."
+  (let ((open-buffers (buffer-list))
+        (preview-window (selected-window)))
     (lambda (action cand)
+      ;; Cancel any pending preview timer
+      (when my-cpp-symbols--preview-timer
+        (cancel-timer my-cpp-symbols--preview-timer)
+        (setq my-cpp-symbols--preview-timer nil))
       (pcase action
         ('preview
          (when-let* ((sym (my-cpp-symbols--get-symbol cand))
                      (file (plist-get sym :file))
                      (line (plist-get sym :line)))
            (when (file-exists-p file)
-             (let ((buf (find-file-noselect file)))
-               (with-current-buffer buf
-                 (goto-char (point-min))
-                 (forward-line (1- line)))
-               (consult--buffer-action buf)))))
+             ;; Check if buffer already exists (instant preview)
+             (let ((existing-buf (get-file-buffer file)))
+               (if existing-buf
+                   ;; Buffer already open - preview immediately
+                   (progn
+                     (with-current-buffer existing-buf
+                       (goto-char (point-min))
+                       (forward-line (1- line)))
+                     (set-window-buffer preview-window existing-buf))
+                 ;; Buffer not open - delay loading
+                 (setq my-cpp-symbols--preview-timer
+                       (run-with-idle-timer
+                        my-cpp-symbols-preview-delay nil
+                        (lambda ()
+                          (when (and (window-live-p preview-window)
+                                     (file-exists-p file))
+                            (let ((buf (find-file-noselect file)))
+                              (with-current-buffer buf
+                                (goto-char (point-min))
+                                (forward-line (1- line)))
+                              (set-window-buffer preview-window buf)))))))))))
         ('exit
          ;; Close buffers we opened for preview
          (dolist (buf (buffer-list))
@@ -231,7 +258,7 @@ Otherwise, search in PROJECT-ROOT itself."
 
 ;; --- Entry Point ---
 
-(defun my-consult-cpp-symbols (&optional force-refresh)
+(defun my-find-symbols (&optional force-refresh)
   "Browse C++ symbols in the current project using consult.
 With prefix arg FORCE-REFRESH, rescan the project ignoring cache."
   (interactive "P")
