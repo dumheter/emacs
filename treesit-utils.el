@@ -135,7 +135,7 @@ Otherwise, search in PROJECT-ROOT itself."
          (files (when (file-directory-p search-dir)
                   (directory-files-recursively
                    search-dir
-                   "\\.\\(cpp\\|h\\|hpp\\|cc\\|cxx\\)$")))
+                   "\\.\\(cpp\\|h\\|hpp\\|cc\\|cxx\\|c\\)$")))
          (total (length files))
          (count 0)
          (symbols '()))
