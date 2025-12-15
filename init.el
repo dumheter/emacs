@@ -598,12 +598,12 @@
 (use-package treesit
   :ensure nil
   :config
-  (setq treesit-language-source-alist
-		'((cpp "https://github.com/tree-sitter/tree-sitter-cpp" "v0.23.4")))
+  ;;(setq treesit-language-source-alist
+	;;	'((cpp "https://github.com/tree-sitter/tree-sitter-cpp" "v0.23.4")))
   ;; Optionally remap modes to use tree-sitter versions
-  (setq major-mode-remap-alist
-        '((c++-mode . c++-ts-mode)
-          (c-mode . c-ts-mode)))
+  ;;(setq major-mode-remap-alist
+  ;;      '((c++-mode . c++-ts-mode)
+  ;;        (c-mode . c-ts-mode)))
   )
 
 ;; Load tree-sitter utilities (C++ symbol browsing with consult)
