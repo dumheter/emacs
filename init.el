@@ -109,6 +109,13 @@
   (setq coding-system-for-write 'utf-8)
   (setq file-name-coding-system 'utf-8)
   (setq locale-coding-system 'utf-8)
+  ;; UTF-8 RE-ENCODE GUIDE:
+  ;; 1. If the file is already open, close it.
+  ;; 2. With `C-x RET c`, universal-coding-system-argument,
+  ;;    make sure to open the file with the original encoding, ex latin-1.
+  ;; 3. Open the file as normal.
+  ;; 4. Now encode the file as utf-8 with `C-x RET f`, set-buffer-file-coding-system.
+  ;; 5. Save the file.
 
   ;; Font
   (cond
