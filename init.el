@@ -74,6 +74,9 @@
 	 ("M-C-SPC" . mark-sexp-at-point)
 	 ("C-c f" . recentf)
 	 ("C-c g" . revert-buffer)
+	 ("C-c C-l u" . my-convert-to-unix-line-endings)
+	 ("C-c C-l d" . my-convert-to-dos-line-endings)
+	 ("C-c C-l s" . my-show-line-ending-type)
 	 )
   :custom
 
@@ -99,16 +102,62 @@
   (setq-default tab-width 4)
   (setq blink-cursor-mode nil)
 
-  ;; ensure utf-8
-  (set-default-coding-systems 'utf-8)
+  ;; Platform-aware UTF-8 with automatic line ending detection
+  ;; - New files: utf-8-dos on Windows, utf-8-unix on Linux/Mac
+  ;; - Existing files: auto-detect line endings and preserve them
+  (let ((default-coding (if (eq system-type 'windows-nt)
+                            'utf-8-dos
+                          'utf-8-unix)))
+    (prefer-coding-system default-coding)
+    (setq-default buffer-file-coding-system default-coding))
+
+  ;; Auto-detect line endings when reading files
+  (setq coding-system-for-read nil)  ; nil allows auto-detection
+
+  ;; Other UTF-8 settings
   (set-terminal-coding-system 'utf-8)
   (set-keyboard-coding-system 'utf-8)
   (set-selection-coding-system 'utf-8)
-  (prefer-coding-system 'utf-8)
-  (setq coding-system-for-read 'utf-8)
-  (setq coding-system-for-write 'utf-8)
-  (setq file-name-coding-system 'utf-8)
   (setq locale-coding-system 'utf-8)
+
+  ;; Line ending conversion commands
+  ;; Use C-c C-l prefix for line ending operations
+  (defun my-convert-to-unix-line-endings ()
+    "Convert current buffer to Unix (LF) line endings.
+Warns if buffer has unsaved changes."
+    (interactive)
+    (when (and (buffer-modified-p)
+               (not (y-or-n-p "Buffer has unsaved changes. Convert anyway? ")))
+      (user-error "Aborted"))
+    (set-buffer-file-coding-system 'utf-8-unix t)
+    (message "Converted to Unix (LF) line endings. Save to apply."))
+
+  (defun my-convert-to-dos-line-endings ()
+    "Convert current buffer to DOS (CRLF) line endings.
+Warns if buffer has unsaved changes. Also removes stray ^M characters."
+    (interactive)
+    (when (and (buffer-modified-p)
+               (not (y-or-n-p "Buffer has unsaved changes. Convert anyway? ")))
+      (user-error "Aborted"))
+    ;; Remove stray ^M (carriage return) characters before converting
+    (save-excursion
+      (goto-char (point-min))
+      (while (search-forward "\r" nil t)
+        (replace-match "" nil t)))
+    (set-buffer-file-coding-system 'utf-8-dos t)
+    (message "Converted to DOS (CRLF) line endings. Save to apply."))
+
+  (defun my-show-line-ending-type ()
+    "Display the current line ending type in the minibuffer."
+    (interactive)
+    (let* ((coding (symbol-name buffer-file-coding-system))
+           (eol-type (cond
+                      ((string-match "dos" coding) "DOS (CRLF)")
+                      ((string-match "unix" coding) "Unix (LF)")
+                      ((string-match "mac" coding) "Mac (CR)")
+                      (t "Unknown"))))
+      (message "Line endings: %s | Coding system: %s" eol-type buffer-file-coding-system)))
+
   ;; UTF-8 RE-ENCODE GUIDE:
   ;; 1. If the file is already open, close it.
   ;; 2. With `C-x RET c`, universal-coding-system-argument,
@@ -155,15 +204,10 @@
 							 (abbreviate-file-name (buffer-file-name))
 							 (buffer-name)))))
 
-  ;; Hide ^M characters from DOS line endings
-  ;;(defun remove-dos-eol ()
-  ;;  "Do not show ^M in files containing mixed UNIX and DOS line endings."
-  ;;  (interactive)
-  ;;  (setq buffer-display-table (make-display-table))
-  ;;  (aset buffer-display-table ?\^M []))
-;;
-;;  ;; Automatically hide ^M in all buffers
-;;  (add-hook 'find-file-hook 'remove-dos-eol)
+  ;; Line ending handling is now automatic:
+  ;; - Auto-detects line endings in existing files
+  ;; - New files use platform defaults (DOS on Windows, Unix on Linux/Mac)
+  ;; - Use C-c C-l u/d/s to convert or show line ending type
 
   (global-hl-line-mode)
   (fset 'yes-or-no-p 'y-or-n-p)
