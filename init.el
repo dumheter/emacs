@@ -89,6 +89,7 @@
    '(read-only t cursor-intagible t face minibuffer-prompt))
 
   :config
+  (column-number-mode 1)
   (menu-bar-mode -1)
   (tool-bar-mode -1)
   (scroll-bar-mode -1)
