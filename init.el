@@ -215,6 +215,16 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   (delete-selection-mode 1) ;; Deletion commands work on regions.
   )
 
+(use-package super-save
+  :ensure t
+  :diminish
+  :config
+  (super-save-mode +1)
+  ;; Save when switching buffers/windows
+  (setq super-save-auto-save-when-idle t)
+  (setq super-save-idle-duration 30)  ;; Save after 30 seconds of idle time
+  )
+
 (use-package recentf
   :ensure nil ; built in
   :hook (after-init . recentf-mode)
