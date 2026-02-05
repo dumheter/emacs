@@ -677,6 +677,9 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 		)
   )
 
+(use-package scala-mode
+  :interpreter
+  ("scala" . scala-mode))
 
 ;; -------------------------------------------------------------------
 ;; run-exe
