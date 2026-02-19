@@ -49,21 +49,35 @@ Otherwise, search in PROJECT-ROOT itself."
   "Ensure the tree-sitter query is compiled."
   (unless treesit-utils-symbols--query
     (setq treesit-utils-symbols--query
-          (treesit-query-compile
-           'cpp
-           '((function_definition
-              declarator: (function_declarator
-                           declarator: (_) @func))
-             (class_specifier
-              name: (type_identifier) @class)
-             (struct_specifier
-              name: (type_identifier) @struct)
-             (enum_specifier
-              name: (type_identifier) @enum)
-             (alias_declaration
-              name: (type_identifier) @alias)
-             (type_definition
-              declarator: (type_identifier) @typedef))))))
+           (treesit-query-compile
+            'cpp
+            '(;; Function definitions: void foo() { ... }
+              (function_definition
+               declarator: (function_declarator
+                            declarator: (_) @func))
+              ;; Function prototypes and constructor/destructor declarations
+              (declaration
+               declarator: (function_declarator
+                            declarator: (_) @func))
+              ;; Method declarations in class/struct bodies: void bar();
+              (field_declaration
+               declarator: (function_declarator
+                            declarator: (_) @func))
+              ;; Classes
+              (class_specifier
+               name: (type_identifier) @class)
+              ;; Structs
+              (struct_specifier
+               name: (type_identifier) @struct)
+              ;; Enums (plain and enum class/struct)
+              (enum_specifier
+               name: (type_identifier) @enum)
+              ;; Using aliases: using Foo = ...;
+              (alias_declaration
+               name: (type_identifier) @alias)
+              ;; Typedefs: typedef ... Foo;
+              (type_definition
+               declarator: (type_identifier) @typedef))))))
 
 ;; --- Symbol Extraction ---
 
@@ -102,28 +116,23 @@ Otherwise, search in PROJECT-ROOT itself."
   (condition-case nil
       (with-temp-buffer
         (insert-file-contents file)
-        (let ((lang (treesit-language-at (point-min))))
-          ;; Ensure we have C++ tree-sitter
-          (unless lang
-            (setq-local treesit-language-source-alist
-                        '((cpp . nil)))
-            (treesit-parser-create 'cpp))
-          (let* ((root (treesit-buffer-root-node 'cpp))
-                 (captures (treesit-query-capture
-                            root treesit-utils-symbols--query)))
-            (mapcar
-             (lambda (capture)
-               (let* ((name-sym (car capture))
-                      (node (cdr capture))
-                      (sym-name (treesit-utils-symbols--node-name node))
-                      (sym-type (treesit-utils-symbols--capture-to-type name-sym))
-                      (line (line-number-at-pos
-                             (treesit-node-start node))))
-                 (list :name sym-name
-                       :type sym-type
-                       :file file
-                       :line line)))
-             captures))))
+        (let* ((parser (treesit-parser-create 'cpp))
+               (root (treesit-parser-root-node parser))
+               (captures (treesit-query-capture
+                          root treesit-utils-symbols--query)))
+          (mapcar
+           (lambda (capture)
+             (let* ((name-sym (car capture))
+                    (node (cdr capture))
+                    (sym-name (treesit-utils-symbols--node-name node))
+                    (sym-type (treesit-utils-symbols--capture-to-type name-sym))
+                    (line (line-number-at-pos
+                           (treesit-node-start node))))
+               (list :name sym-name
+                     :type sym-type
+                     :file file
+                     :line line)))
+           captures)))
     (error nil)))
 
 ;; --- Project Scanning ---
@@ -145,8 +154,8 @@ Otherwise, search in PROJECT-ROOT itself."
           nil)
       (dolist (file files)
         (setq count (1+ count))
-        (message "Scanning C++ symbols... %d/%d: %s"
-                 count total (file-name-nondirectory file))
+        (when (= (mod count 100) 0)
+          (message "Scanning C++ symbols... %d/%d" count total))
         (let ((file-symbols (treesit-utils-symbols--parse-file file)))
           (setq symbols (nconc symbols file-symbols))))
       (message "Scanned %d symbols from %d files" (length symbols) total)
