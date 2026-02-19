@@ -111,6 +111,14 @@ Otherwise, search in PROJECT-ROOT itself."
     ('typedef "typedef")
     (_ "unknown")))
 
+(defun treesit-utils-symbols--forward-declaration-p (capture-name node)
+  "Return non-nil if CAPTURE-NAME and NODE represent a forward declaration.
+Forward declarations like `class Foo;' or `struct Bar;' are
+class/struct specifiers without a body."
+  (and (memq capture-name '(class struct))
+       (let ((parent (treesit-node-parent node)))
+         (not (treesit-node-child-by-field-name parent "body")))))
+
 (defun treesit-utils-symbols--parse-file (file)
   "Parse FILE and return a list of symbol plists."
   (condition-case nil
@@ -119,20 +127,21 @@ Otherwise, search in PROJECT-ROOT itself."
         (let* ((parser (treesit-parser-create 'cpp))
                (root (treesit-parser-root-node parser))
                (captures (treesit-query-capture
-                          root treesit-utils-symbols--query)))
-          (mapcar
-           (lambda (capture)
-             (let* ((name-sym (car capture))
-                    (node (cdr capture))
-                    (sym-name (treesit-utils-symbols--node-name node))
-                    (sym-type (treesit-utils-symbols--capture-to-type name-sym))
-                    (line (line-number-at-pos
-                           (treesit-node-start node))))
-               (list :name sym-name
-                     :type sym-type
-                     :file file
-                     :line line)))
-           captures)))
+                          root treesit-utils-symbols--query))
+               (result '()))
+          (dolist (capture captures (nreverse result))
+            (let* ((name-sym (car capture))
+                   (node (cdr capture)))
+              (unless (treesit-utils-symbols--forward-declaration-p name-sym node)
+                (let* ((sym-name (treesit-utils-symbols--node-name node))
+                       (sym-type (treesit-utils-symbols--capture-to-type name-sym))
+                       (line (line-number-at-pos
+                              (treesit-node-start node))))
+                  (push (list :name sym-name
+                              :type sym-type
+                              :file file
+                              :line line)
+                        result)))))))
     (error nil)))
 
 ;; --- Project Scanning ---
