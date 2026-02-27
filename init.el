@@ -443,7 +443,6 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   :demand t
   :config
   (setq projectile-enable-caching 'persistent)
-  (setq projectile-cache-file "~/.emacs.d/projectile.cache")
   (setq projectile-indexing-method 'alien)
   ;;(setq projectile-sort-order 'recently-active)
   ;;(setq projectile-generic-command "fd -e cpp -e h -e ddf -tf --color=never")
