@@ -9,6 +9,8 @@
 (require 'treesit)
 (require 'consult)
 (require 'projectile)
+(require 'cl-lib)
+(require 'subr-x)
 
 ;; --- Configuration ---
 
@@ -30,15 +32,17 @@
 (defvar treesit-utils-symbols--lookup-table nil
   "Hash table mapping display strings to symbol plists for current session.")
 
-(defun treesit-utils-symbols--search-directory (project-root)
-  "Return the directory to search for C++ files in PROJECT-ROOT.
-If PROJECT-ROOT is named \"TnT\", use `treesit-utils-symbols-search-subdir'.
+(defun treesit-utils-symbols--search-directories (project-root)
+  "Return a list of directories to search for C++ files in PROJECT-ROOT.
+If PROJECT-ROOT is named \"TnT\", include
+`treesit-utils-symbols-search-subdir' and \"Code/Engine\".
 Otherwise, search in PROJECT-ROOT itself."
   (let ((project-name (file-name-nondirectory
                        (directory-file-name project-root))))
     (if (string= project-name "TnT")
-        (expand-file-name treesit-utils-symbols-search-subdir project-root)
-      (expand-file-name "." project-root))))
+        (list (expand-file-name treesit-utils-symbols-search-subdir project-root)
+              (expand-file-name "Code/Engine" project-root))
+      (list (expand-file-name "." project-root)))))
 
 ;; --- Tree-sitter Query ---
 
@@ -149,17 +153,18 @@ class/struct specifiers without a body."
 (defun treesit-utils-symbols--scan-project (project-root)
   "Scan C++ files in PROJECT-ROOT and return list of symbols."
   (treesit-utils-symbols--ensure-query)
-  (let* ((search-dir (treesit-utils-symbols--search-directory project-root))
-         (files (when (file-directory-p search-dir)
-                  (directory-files-recursively
-                   search-dir
-                   "\\.\\(cpp\\|h\\|hpp\\|cc\\|cxx\\|c\\)$")))
+  (let* ((search-dirs (treesit-utils-symbols--search-directories project-root))
+         (files (cl-loop for dir in search-dirs
+                         when (file-directory-p dir)
+                         append (directory-files-recursively
+                                 dir
+                                 "\\.\\(cpp\\|h\\|hpp\\|cc\\|cxx\\|c\\)$")))
          (total (length files))
          (count 0)
          (symbols '()))
     (if (null files)
         (progn
-          (message "No C++ files found in %s" search-dir)
+          (message "No C++ files found in %s" (string-join search-dirs ", "))
           nil)
       (dolist (file files)
         (setq count (1+ count))
