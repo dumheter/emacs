@@ -77,6 +77,7 @@
 	 ("C-c C-l u" . my-convert-to-unix-line-endings)
 	 ("C-c C-l d" . my-convert-to-dos-line-endings)
 	 ("C-c C-l s" . my-show-line-ending-type)
+	 ("C-c c" . my-copy-reference-to-here)
 	 )
   :custom
 
@@ -984,6 +985,17 @@ the command signals an error."
 		(kill-new buffer-file-name)
 		buffer-file-name)
 	nill))
+
+(defun my-copy-reference-to-here ()
+  "Copy a file reference with line number to the clipboard.
+Format: /path/to/file.cpp(355)"
+  (interactive)
+  (if buffer-file-name
+      (let* ((line (line-number-at-pos))
+             (ref (format "%s(%d)" buffer-file-name line)))
+        (kill-new ref)
+        (message "Copied: %s" ref))
+    (user-error "Buffer is not visiting a file")))
 
 (defun create-cpp-include (file-path)
   "Create a c++ include from file path."
