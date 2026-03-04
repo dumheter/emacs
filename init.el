@@ -988,11 +988,16 @@ the command signals an error."
 
 (defun my-copy-reference-to-here ()
   "Copy a file reference with line number to the clipboard.
-Format: /path/to/file.cpp(355)"
+Format: @Code/path/to/file.cpp L355, relative to projectile project root."
   (interactive)
   (if buffer-file-name
-      (let* ((line (line-number-at-pos))
-             (ref (format "%s(%d)" buffer-file-name line)))
+      (let* ((root (or (and (fboundp 'projectile-project-root)
+                            (projectile-project-root))
+                       (user-error "Not in a Projectile project")))
+             (rel (file-relative-name buffer-file-name root))
+             (rel-forward (replace-regexp-in-string "\\\\" "/" rel))
+             (line (line-number-at-pos))
+             (ref (format "@%s L%d" rel-forward line)))
         (kill-new ref)
         (message "Copied: %s" ref))
     (user-error "Buffer is not visiting a file")))
