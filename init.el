@@ -392,8 +392,8 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
    consult-theme :preview-key '(:debounce 0.2 any)
    consult-ripgrep consult-git-grep consult-grep consult-man
    consult-bookmark consult-recent-file consult-xref
-   consult--source-bookmark consult--source-file-register
-   consult--source-recent-file consult--source-project-recent-file
+   consult-source-bookmark consult-source-file-register
+   consult-source-recent-file consult-source-project-recent-file
    ;; :preview-key "M-."
    :preview-key '(:debounce 0.4 any))
 
@@ -672,9 +672,16 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 (load (expand-file-name "treesit-utils" user-emacs-directory))
 (use-package treesit-utils
   :ensure nil
+  ;; Kept as fallback; primary keybinding is now symbols-server-find-symbols
+  )
+
+;; Load symbols-server client (C++ symbol server over JSON-stdio)
+(load (expand-file-name "symbols-server" user-emacs-directory))
+(use-package symbols-server
+  :ensure nil
   :bind(
-		("M-s M-s" . treesit-utils-find-symbols)
-		)
+        ("M-s M-s" . symbols-server-find-symbols)
+        )
   )
 
 (use-package scala-mode
