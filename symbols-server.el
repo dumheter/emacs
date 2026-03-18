@@ -277,6 +277,10 @@ FILE must be an absolute path string."
   (or (projectile-project-root)
       (user-error "Not in a projectile project")))
 
+(defun symbols-server--cache-file (project-root)
+  "Return the cache file path for PROJECT-ROOT."
+  (expand-file-name ".cache/symbols-index.json" project-root))
+
 (defun symbols-server--ready-state-for-project (project-root)
   "Return a ready server state for PROJECT-ROOT."
   (let* ((search-dir (symbols-server--search-dir project-root))
@@ -302,9 +306,20 @@ FILE must be an absolute path string."
                     (message "symbols-server: invalidating cache file...")
                     (symbols-server--call-command state "invalidateCache" nil symbols-server-ready-timeout))))
     (let ((error-text (alist-get 'error response)))
-      (when error-text
-        (user-error "symbols-server: %s" error-text)))
-    (message "symbols-server: cache file invalidated")
+      (cond
+       ((and (stringp error-text)
+             (string= error-text "Unknown method"))
+        (let ((cache-file (symbols-server--cache-file
+                           (symbols-server--state-project-root state))))
+          (if (file-exists-p cache-file)
+              (progn
+                (delete-file cache-file)
+                (message "symbols-server: cache file invalidated locally (server binary is older)"))
+            (message "symbols-server: cache file already missing (server binary is older)"))))
+       (error-text
+        (user-error "symbols-server: %s" error-text))
+       (t
+        (message "symbols-server: cache file invalidated"))))
     response))
 
 ;; ---------------------------------------------------------------------------
@@ -444,11 +459,14 @@ PROJECT-ROOT is prepended to relative file paths from the server."
         (_ nil)))))
 
 ;; ---------------------------------------------------------------------------
-;; Search-dir helper
+;; Search-dir helper (mirrors treesit-utils logic for TnT project)
 
 (defun symbols-server--search-dir (project-root)
   "Return the search-dir argument for PROJECT-ROOT, or nil for the whole project."
   nil)
+  ;;(let ((name (file-name-nondirectory (directory-file-name project-root))))
+;;    (when (string= name "TnT")
+      ;;(expand-file-name "Code/DICE/Extensions/BattlefieldOnline" project-root))))
 
 ;; ---------------------------------------------------------------------------
 ;; Auto-rebuild-on-save hook

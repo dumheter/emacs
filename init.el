@@ -577,6 +577,7 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 (defvar my-gptel-keymap (make-sparse-keymap)
   "Keymap for my custom gptel bindings.")
 
+
 (use-package gptel
   :ensure t
   :init
