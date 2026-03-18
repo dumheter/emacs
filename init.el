@@ -45,6 +45,16 @@
 (setq package-archives '(("melpa" . "https://melpa.org/packages/")
                          ("org" . "https://orgmode.org/elpa/")
                          ("elpa" . "https://elpa.gnu.org/packages/")))
+;; On Windows with MSYS2/Git Bash GPG, convert the gnupg homedir to a
+;; MSYS-compatible path (e.g. /c/Users/...) so GPG doesn't treat it as
+;; relative and prepend the current working directory.
+(when (eq system-type 'windows-nt)
+  (let ((gnupg-dir (expand-file-name "elpa/gnupg"
+                     (file-name-directory
+                       (or load-file-name
+                           (buffer-file-name))))))
+    (setq package-gnupghome-dir
+          (concat "/" (replace-regexp-in-string ":" "" gnupg-dir)))))
 (package-initialize)
 (unless package-archive-contents
   (package-refresh-contents))
@@ -688,6 +698,17 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 (use-package scala-mode
   :interpreter
   ("scala" . scala-mode))
+
+(use-package copilot
+  :ensure t
+  :hook (prog-mode . copilot-mode)
+  :bind (:map copilot-completion-map
+              ("<tab>" . copilot-accept-completion)
+              ("TAB" . copilot-accept-completion)
+              ("C-<tab>" . copilot-accept-completion-by-word)
+              ("C-TAB" . copilot-accept-completion-by-word)
+              ("C-n" . copilot-next-completion)
+              ("C-p" . copilot-previous-completion)))
 
 ;; -------------------------------------------------------------------
 ;; run-exe
