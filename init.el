@@ -699,16 +699,17 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   :interpreter
   ("scala" . scala-mode))
 
-(use-package copilot
-  :ensure t
-  :hook (prog-mode . copilot-mode)
-  :bind (:map copilot-completion-map
-              ("<tab>" . copilot-accept-completion)
-              ("TAB" . copilot-accept-completion)
-              ("C-<tab>" . copilot-accept-completion-by-word)
-              ("C-TAB" . copilot-accept-completion-by-word)
-              ("C-n" . copilot-next-completion)
-              ("C-p" . copilot-previous-completion)))
+(when (string-match "DICE" (system-name))
+  (use-package copilot
+    :ensure t
+    :hook (prog-mode . copilot-mode)
+    :bind (:map copilot-completion-map
+                ("<tab>" . copilot-accept-completion)
+                ("TAB" . copilot-accept-completion)
+                ("C-<tab>" . copilot-accept-completion-by-word)
+                ("C-TAB" . copilot-accept-completion-by-word)
+                ("C-n" . copilot-next-completion)
+                ("C-p" . copilot-previous-completion))))
 
 ;; -------------------------------------------------------------------
 ;; run-exe
