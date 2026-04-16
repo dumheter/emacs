@@ -464,9 +464,15 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   :bind(("C-c r" . my-projectile-related-file))
   )
 
+(defun my-disable-lsp-bridge-in-markdown ()
+  "Disable lsp-bridge in Markdown buffers."
+  (lsp-bridge-mode -1))
+
 (use-package markdown-mode
   :ensure t
   :mode ("README\\.md\\'" . gfm-mode)
+  :hook ((markdown-mode . my-disable-lsp-bridge-in-markdown)
+         (gfm-mode . my-disable-lsp-bridge-in-markdown))
   :init (setq markdown-command "multimarkdown")
   :bind (:map markdown-mode-map
 	      ("C-c C-e" . markdown-do))
@@ -698,6 +704,9 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 (use-package scala-mode
   :interpreter
   ("scala" . scala-mode))
+
+(use-package powershell
+  :ensure t)
 
 (when (string-match "DICE" (system-name))
   (use-package copilot
