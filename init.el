@@ -714,6 +714,7 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
     :hook (prog-mode . copilot-mode)
     :config
     (setq copilot-indent-offset-warning-disable t)
+    (setq copilot-max-char-warning-disable t)
     :bind (:map copilot-completion-map
                 ("<tab>" . copilot-accept-completion)
                 ("TAB" . copilot-accept-completion)
