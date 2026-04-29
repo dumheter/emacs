@@ -578,6 +578,15 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   (define-key my-lsp-bridge-keymap (kbd "t") #'lsp-bridge-workspace-list-symbols)
 
   :config
+  (setq lsp-bridge-get-project-path-by-filepath
+        (lambda (filepath)
+          (let* ((file (file-truename filepath))
+                 (projectile-root (locate-dominating-file file ".projectile"))
+                 (git-root (locate-dominating-file file ".git"))
+                 (root (or projectile-root git-root)))
+            (if root
+                (directory-file-name (file-truename root))
+              (directory-file-name (file-name-directory file))))))
   (setq lsp-bridge-enable-signature-help t)
   (global-lsp-bridge-mode)
   (setq lsp-bridge-enable-inlay-hint t)
