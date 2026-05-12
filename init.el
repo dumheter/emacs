@@ -464,15 +464,22 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   :bind(("C-c r" . my-projectile-related-file))
   )
 
-(defun my-disable-lsp-bridge-in-markdown ()
-  "Disable lsp-bridge in Markdown buffers."
-  (lsp-bridge-mode -1))
+(defun my-configure-markdown-buffer ()
+  "Disable expensive features that make Markdown editing sluggish."
+  (lsp-bridge-mode -1)
+  (setq-local markdown-mode-font-lock-keywords
+              (cl-remove-if
+               (lambda (keyword)
+                 (memq (car-safe keyword)
+                       '(markdown-match-bold markdown-match-italic)))
+               markdown-mode-font-lock-keywords))
+  (font-lock-flush))
 
 (use-package markdown-mode
   :ensure t
   :mode ("README\\.md\\'" . gfm-mode)
-  :hook ((markdown-mode . my-disable-lsp-bridge-in-markdown)
-         (gfm-mode . my-disable-lsp-bridge-in-markdown))
+  :hook ((markdown-mode . my-configure-markdown-buffer)
+         (gfm-mode . my-configure-markdown-buffer))
   :init (setq markdown-command "multimarkdown")
   :bind (:map markdown-mode-map
 	      ("C-c C-e" . markdown-do))
