@@ -523,6 +523,195 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 
 (use-package p4
   :ensure t
+  :config
+  (defvar-local my-p4-diff-patience-file nil
+    "File shown in the current `p4-diff-patience' buffer.")
+
+  (defun my-p4-fstat-info (file)
+    "Return a plist with Perforce info for FILE."
+    (let ((info
+           (p4-with-temp-buffer
+               (list "fstat" "-T" "depotFile,clientFile,haveRev" file)
+             (let (depot-file client-file have-rev)
+               (goto-char (point-min))
+               (while (re-search-forward "^\\.\\.\\. \\([^ \n]+\\) \\(.*\\)$" nil t)
+                 (let ((key (match-string-no-properties 1))
+                       (value (match-string-no-properties 2)))
+                   (cond
+                    ((string= key "depotFile") (setq depot-file value))
+                    ((string= key "clientFile") (setq client-file value))
+                    ((string= key "haveRev") (setq have-rev value)))))
+               (list :depot-file depot-file
+                     :client-file client-file
+                     :have-rev have-rev)))))
+      (unless (and info (plist-get info :depot-file))
+        (error "Could not get Perforce file info for %s" file))
+      info))
+
+  (defun my-p4-have-revision-filespec (depot-file have-rev)
+    "Return a printable have-revision filespec for DEPOT-FILE and HAVE-REV."
+    (unless (member have-rev '(nil "" "0" "none"))
+      (format "%s#%s" depot-file have-rev)))
+
+  (defun my-p4-write-have-revision-to-file (filespec target-file)
+    "Write FILESPEC contents to TARGET-FILE, or an empty file if FILESPEC is nil."
+    (let ((wrote nil))
+      (if filespec
+          (p4-with-temp-buffer (list "print" "-q" "-o" target-file filespec)
+            (setq wrote t))
+        (with-temp-file target-file)
+        (setq wrote t))
+      (unless wrote
+        (error "Could not print %s" filespec))))
+
+  (defun my-p4-run-git-patience-diff (old-file new-file)
+    "Return a patience diff between OLD-FILE and NEW-FILE using Git."
+    (let ((git (executable-find "git")))
+      (unless git
+        (error "Could not find git executable"))
+      (with-temp-buffer
+        (let ((status (call-process git nil t nil
+                                    "diff" "--no-index" "--patience" "--no-color"
+                                    old-file new-file)))
+          (unless (memq status '(0 1))
+            (error "git diff --no-index --patience failed: %s"
+                   (buffer-string))))
+        (buffer-string))))
+
+  (defun my-p4-format-patience-diff (diff-text depot-file have-rev client-file)
+    "Format Git DIFF-TEXT so `p4-diff-mode' can navigate it."
+    (let ((old-filespec (or (my-p4-have-revision-filespec depot-file have-rev)
+                            (format "%s#0" depot-file)))
+          (date (format-time-string "%Y-%m-%d %H:%M:%S +0000" (current-time) t)))
+      (with-temp-buffer
+        (insert diff-text)
+        (goto-char (point-min))
+        (while (looking-at
+                "\\(?:diff --git\\|index\\|old mode\\|new mode\\|deleted file mode\\|new file mode\\).*?\n")
+          (replace-match ""))
+        (goto-char (point-min))
+        (when (re-search-forward "^--- .*$" nil t)
+          (replace-match (format "--- %s\t%s" old-filespec date) t t))
+        (when (re-search-forward "^\\+\\+\\+ .*$" nil t)
+          (replace-match (format "+++ %s\t%s" client-file date) t t))
+        (buffer-string))))
+
+  (defun my-p4-diff-patience-apply-faces ()
+    "Apply local diff colors for `p4-diff-patience' buffers."
+    (face-remap-add-relative 'diff-added '(:background "#e6ffe6"))
+    (face-remap-add-relative 'diff-removed '(:background "#ffecec"))
+    (when (facep 'diff-refine-added)
+      (face-remap-add-relative 'diff-refine-added
+                               '(:background "#5fba5f" :foreground "#002b36")))
+    (when (facep 'diff-refine-removed)
+      (face-remap-add-relative 'diff-refine-removed
+                               '(:background "#d66a6a" :foreground "#002b36"))))
+
+  (defun my-p4-diff-patience-refine-hunks ()
+    "Refine all hunks in the current diff buffer."
+    (when (fboundp 'diff-refine-hunk)
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward "^@@ " nil t)
+          (diff-beginning-of-hunk)
+          (diff-refine-hunk)
+          (diff-end-of-hunk)))))
+
+  (defun my-p4-diff-patience-goto-buffer-location (buffer line offset)
+    "Show BUFFER without replacing an existing visible window, then go to LINE."
+    (unless (buffer-live-p buffer)
+      (error "Could not find source buffer"))
+    (let ((window (get-buffer-window buffer t)))
+      (if window
+          (select-window window)
+        (switch-to-buffer buffer))
+      (p4-goto-line line)
+      (when offset
+        (forward-char offset))))
+
+  (defun my-p4-diff-patience-goto-source (&optional other-file event)
+    "Jump from a patience diff hunk to the corresponding source line."
+    (interactive (list current-prefix-arg last-input-event))
+    (if event (posn-set-point (event-end event)))
+    (let* ((reverse (save-excursion
+                      (beginning-of-line)
+                      (looking-at "[-<]")))
+           (location (p4-diff-find-source-location
+                      (diff-xor other-file reverse)))
+           (filespec (nth 0 location))
+           (line (nth 1 location))
+           (offset (nth 2 location)))
+      (if (file-readable-p filespec)
+          (my-p4-diff-patience-goto-buffer-location
+           (find-file-noselect filespec)
+           line offset)
+        (my-p4-diff-patience-goto-buffer-location
+         (p4-depot-find-file-noselect filespec)
+         line offset))))
+
+  (defun my-p4-diff-patience-use-keymap ()
+    "Use a diff keymap that jumps directly to local files when possible."
+    (let ((map (p4-make-derived-map p4-diff-mode-map)))
+      (define-key map "\C-m" #'my-p4-diff-patience-goto-source)
+      (define-key map [mouse-2] #'my-p4-diff-patience-goto-source)
+      (define-key map "o" #'my-p4-diff-patience-goto-source)
+      (use-local-map map)))
+
+  (defun my-p4-diff-patience-revert (&optional _ignore-auto _noconfirm)
+    "Refresh the current `p4-diff-patience' buffer."
+    (unless my-p4-diff-patience-file
+      (error "No file associated with this p4-diff-patience buffer"))
+    (p4-diff-patience my-p4-diff-patience-file))
+
+  (when (eq (default-value 'revert-buffer-function)
+            #'my-p4-diff-patience-revert)
+    (setq-default revert-buffer-function nil))
+
+  (defun p4-diff-patience (&optional file)
+    "Display a Git patience diff of FILE against its Perforce have revision."
+    (interactive)
+    (let* ((file (or file (p4-context-single-filename)))
+           (_ (unless file
+                (error "No Perforce file in the current context")))
+           (info (my-p4-fstat-info file))
+           (depot-file (plist-get info :depot-file))
+           (client-file (or (plist-get info :client-file) file))
+           (have-rev (plist-get info :have-rev))
+           (have-filespec (my-p4-have-revision-filespec depot-file have-rev))
+           (old-temp (make-temp-file "p4-diff-patience-old-"))
+           (new-temp (make-temp-file "p4-diff-patience-new-")))
+      (unless (file-readable-p client-file)
+        (error "Could not read client file %s" client-file))
+      (unwind-protect
+          (progn
+            (my-p4-write-have-revision-to-file have-filespec old-temp)
+            (copy-file client-file new-temp t)
+            (let ((diff-text (my-p4-format-patience-diff
+                              (my-p4-run-git-patience-diff old-temp new-temp)
+                              depot-file have-rev client-file)))
+              (if (string-match-p "\\S-" diff-text)
+                  (let ((buffer (p4-make-output-buffer
+                                 (format "*P4 diff --patience %s*" client-file)
+                                 'p4-diff-mode)))
+                    (with-current-buffer buffer
+                      (let ((inhibit-read-only t))
+                        (erase-buffer)
+                        (insert diff-text)
+                        (setq my-p4-diff-patience-file file)
+                        (setq-local revert-buffer-function #'my-p4-diff-patience-revert)
+                        (p4-activate-diff-buffer)
+                        (my-p4-diff-patience-apply-faces)
+                        (my-p4-diff-patience-use-keymap)
+                        (font-lock-ensure)
+                        (my-p4-diff-patience-refine-hunks)
+                        (set-buffer-modified-p nil)))
+                    (with-selected-window (display-buffer buffer)
+                      (goto-char (point-min))))
+                (message "No differences found."))))
+        (when (file-exists-p old-temp)
+          (delete-file old-temp))
+        (when (file-exists-p new-temp)
+          (delete-file new-temp)))))
   )
 
 (use-package git-gutter
