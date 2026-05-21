@@ -221,6 +221,14 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   ;; - New files use platform defaults (DOS on Windows, Unix on Linux/Mac)
   ;; - Use C-c C-l u/d/s to convert or show line ending type
 
+  ;; AI tools frequently update files outside Emacs, so automatically reload
+  ;; visiting buffers instead of prompting about the on-disk change.
+  (setq auto-revert-verbose nil)
+  (global-auto-revert-mode 1)
+  (defun ask-user-about-supersession-threat (_fn)
+    "Always reread a visited file from disk without prompting."
+    t)
+
   (global-hl-line-mode)
   (fset 'yes-or-no-p 'y-or-n-p)
   (delete-selection-mode 1) ;; Deletion commands work on regions.
