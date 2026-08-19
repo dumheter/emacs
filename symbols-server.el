@@ -69,6 +69,11 @@ Set to nil to disable automatic single-file rebuilds on save."
   :type 'boolean
   :group 'symbols-server)
 
+(defcustom symbols-server-enable-diagnostics t
+  "If non-nil, ask the server to log startup diagnostics such as slowest parsed files."
+  :type 'boolean
+  :group 'symbols-server)
+
 ;; ---------------------------------------------------------------------------
 ;; Per-project server state
 
@@ -156,7 +161,9 @@ SEARCH-DIR, if non-nil, is passed as --search-dir."
         state
       ;; Start a new server process
       (let* ((exe    symbols-server-executable)
-             (args   (list "--root" (expand-file-name project-root)))
+             (args   (append (list "--root" (expand-file-name project-root))
+                             (when symbols-server-enable-diagnostics
+                               (list "--diagnostics"))))
              (args   (if search-dir
                          (append args (list "--search-dir" (expand-file-name search-dir)))
                        args))
@@ -185,11 +192,18 @@ SEARCH-DIR, if non-nil, is passed as --search-dir."
 
 (defun symbols-server--wait-ready (state timeout-secs)
   "Block (with `accept-process-output') until STATE is ready or TIMEOUT-SECS elapsed.
+Shows a progress message in the echo area after 1 second so the user knows
+the server is still starting up (e.g. during the initial index build).
 Returns non-nil if the server became ready."
-  (let ((deadline (+ (float-time) timeout-secs)))
+  (let ((deadline  (+ (float-time) timeout-secs))
+        (start     (float-time))
+        (next-msg  (+ (float-time) 1.0)))
     (while (and (not (symbols-server--state-ready state))
                 (< (float-time) deadline)
                 (process-live-p (symbols-server--state-process state)))
+      (when (>= (float-time) next-msg)
+        (message "symbols-server: building index... (%.0fs)" (- (float-time) start))
+        (setq next-msg (+ (float-time) 1.0)))
       (accept-process-output (symbols-server--state-process state) 0.1)))
   (symbols-server--state-ready state))
 
@@ -463,10 +477,9 @@ PROJECT-ROOT is prepended to relative file paths from the server."
 
 (defun symbols-server--search-dir (project-root)
   "Return the search-dir argument for PROJECT-ROOT, or nil for the whole project."
-  nil)
-  ;;(let ((name (file-name-nondirectory (directory-file-name project-root))))
-;;    (when (string= name "TnT")
-      ;;(expand-file-name "Code/DICE/Extensions/BattlefieldOnline" project-root))))
+  (let ((name (file-name-nondirectory (directory-file-name project-root))))
+    (when (string= name "TnT")
+      (expand-file-name "Code/DICE/Extensions/BattlefieldOnline" project-root))))
 
 ;; ---------------------------------------------------------------------------
 ;; Auto-rebuild-on-save hook
