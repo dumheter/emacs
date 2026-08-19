@@ -96,6 +96,7 @@
   ;; Hide commands in M-x whihc do not work in current mode. Vertico
   ;; commands are hidden in normal buffers. This setting is usful beyond Vertico.
   (read-extended-command-predicate #'command-completion-default-include-p)
+  (large-file-warning-threshold (* 10 1024 1024))
   ;; Do now allow the cursor in the minibuffer promp
   (minibuffer-promt-properties
    '(read-only t cursor-intagible t face minibuffer-prompt))
