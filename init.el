@@ -88,6 +88,7 @@
 	 ("C-c C-l d" . my-convert-to-dos-line-endings)
 	 ("C-c C-l s" . my-show-line-ending-type)
 	 ("C-c c" . my-copy-reference-to-here)
+	 ("C-c M-c" . my-p4-cl-from-buffer)
 	 )
   :custom
 
@@ -95,6 +96,7 @@
   ;; Hide commands in M-x whihc do not work in current mode. Vertico
   ;; commands are hidden in normal buffers. This setting is usful beyond Vertico.
   (read-extended-command-predicate #'command-completion-default-include-p)
+  (large-file-warning-threshold (* 10 1024 1024))
   ;; Do now allow the cursor in the minibuffer promp
   (minibuffer-promt-properties
    '(read-only t cursor-intagible t face minibuffer-prompt))
@@ -543,8 +545,10 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
     "Return a plist with Perforce info for FILE."
     (let ((info
            (p4-with-temp-buffer
-               (list "fstat" "-T" "depotFile,clientFile,haveRev" file)
-             (let (depot-file client-file have-rev)
+               (list "fstat" "-T"
+                     "depotFile,clientFile,haveRev,action,change"
+                     file)
+             (let (depot-file client-file have-rev action change)
                (goto-char (point-min))
                (while (re-search-forward "^\\.\\.\\. \\([^ \n]+\\) \\(.*\\)$" nil t)
                  (let ((key (match-string-no-properties 1))
@@ -552,13 +556,37 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
                    (cond
                     ((string= key "depotFile") (setq depot-file value))
                     ((string= key "clientFile") (setq client-file value))
-                    ((string= key "haveRev") (setq have-rev value)))))
+                    ((string= key "haveRev") (setq have-rev value))
+                    ((string= key "action") (setq action value))
+                    ((string= key "change") (setq change value)))))
                (list :depot-file depot-file
                      :client-file client-file
-                     :have-rev have-rev)))))
+                     :have-rev have-rev
+                     :action action
+                     :change change)))))
       (unless (and info (plist-get info :depot-file))
         (error "Could not get Perforce file info for %s" file))
       info))
+
+  (defun my-p4-cl-from-buffer ()
+    "Copy the current buffer file's open Perforce changelist to the clipboard."
+    (interactive)
+    (unless buffer-file-name
+      (user-error "Buffer is not visiting a file"))
+    (let* ((file (expand-file-name buffer-file-name))
+           (info (my-p4-fstat-info file))
+           (action (plist-get info :action))
+           (change (plist-get info :change)))
+      (unless action
+        (user-error "File is tracked in Perforce but is not open for edit"))
+      (unless (string= action "edit")
+        (user-error "File is open for %s, not edit" action))
+      (unless change
+        (error "Perforce did not report a changelist for %s" file))
+      (let ((text (format "We are working on CL %s." change)))
+        (kill-new text)
+        (message "Copied: %s" text)
+        text)))
 
   (defun my-p4-have-revision-filespec (depot-file have-rev)
     "Return a printable have-revision filespec for DEPOT-FILE and HAVE-REV."
