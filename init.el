@@ -129,7 +129,11 @@
   ;; Other UTF-8 settings
   (set-terminal-coding-system 'utf-8)
   (set-keyboard-coding-system 'utf-8)
-  (set-selection-coding-system 'utf-8)
+  ;; NOTE: only outside Windows. On w32 the selection coding system must stay at
+  ;; its default (utf-16le-dos) so Emacs writes CF_UNICODETEXT; forcing utf-8 makes
+  ;; it write raw UTF-8 bytes as CF_TEXT and åäö come back mangled.
+  (unless (eq system-type 'windows-nt)
+    (set-selection-coding-system 'utf-8))
   (setq locale-coding-system 'utf-8)
 
   ;; Line ending conversion commands
