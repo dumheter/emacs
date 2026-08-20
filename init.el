@@ -790,6 +790,17 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 
 (use-package clipmon
   :config
+  ;; clipmon calls `kill-new' on every clipboard change, and `kill-new' fires
+  ;; `interprogram-cut-function', which writes the text straight back out to the
+  ;; system clipboard. That echo lands as a second entry in Windows clipboard
+  ;; history (Win+V) for every single copy. Suppress the write-back for clipmon's
+  ;; own handler only -- ordinary copying from Emacs is untouched, and clipmon's
+  ;; dedup still works because it compares against the kill ring, not the echo.
+  (defun my/clipmon-no-clipboard-writeback (orig &rest args)
+    "Let clipmon fill the kill ring without echoing back to the system clipboard."
+    (let ((interprogram-cut-function nil))
+      (apply orig args)))
+  (advice-add 'clipmon--on-clipboard-change :around #'my/clipmon-no-clipboard-writeback)
   (clipmon-mode-start)
   )
 
