@@ -541,6 +541,9 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   (defvar-local my-p4-diff-patience-file nil
     "File shown in the current `p4-diff-patience' buffer.")
 
+  (defconst my-p4-diff-patience-buffer-name "*P4 diff --patience*"
+    "Name of the shared `p4-diff-patience' output buffer.")
+
   (defun my-p4-fstat-info (file)
     "Return a plist with Perforce info for FILE."
     (let ((info
@@ -731,7 +734,7 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
                               depot-file have-rev client-file)))
               (if (string-match-p "\\S-" diff-text)
                   (let ((buffer (p4-make-output-buffer
-                                 (format "*P4 diff --patience %s*" client-file)
+                                 my-p4-diff-patience-buffer-name
                                  'p4-diff-mode)))
                     (with-current-buffer buffer
                       (let ((inhibit-read-only t))
