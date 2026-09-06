@@ -112,7 +112,7 @@
   (setq auto-save-default nil) ;; Disable auto-save files (#file#)
   (setq create-lockfiles nil) ;; Disable lockfiles (.#file)
   (setq backup-inhibited t)
-  (setq-default intent-tabs-mode t)
+  (setq-default indent-tabs-mode t)
   (setq-default tab-width 4)
   (setq blink-cursor-mode nil)
 
@@ -780,8 +780,32 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   )
 
 (use-package editorconfig
-  :ensure t
+  :ensure nil ;; because its builtin to emacs since 30.1
   :config
+  ;; `editorconfig-mode' puts `editorconfig--get-coding-system' on
+  ;; `auto-coding-functions', so every visited file is decoded with the coding
+  ;; system EditorConfig declares for it. When `end_of_line = lf' meets a file
+  ;; checked out with CRLF (the normal state of a working tree with git
+  ;; `core.autocrlf=true' on Windows), the forced -unix decoding leaves a stray
+  ;; CR at the end of every line: `^M' litters the buffer, and in the
+  ;; `.editorconfig' file itself it also breaks the parser, whose section and
+  ;; property regexps are anchored with `$' -- each section header collapses
+  ;; into the previous key and every setting is silently dropped, so
+  ;; `indent-tabs-mode' keeps its default `t' and Emacs indents with tabs in
+  ;; projects that asked for spaces.
+  ;;
+  ;; Only the EOL half of that coding system is wrong, the charset is still
+  ;; worth honouring: drop the EOL part and let Emacs detect it from the
+  ;; content as usual. Buffers then show what is really on disk, and saving
+  ;; writes back the endings it read instead of rewriting the whole file.
+  (define-advice editorconfig--get-coding-system
+      (:filter-return (cs) my-editorconfig-autodetect-eol)
+    "Ignore `end_of_line' when decoding, auto-detect line endings instead."
+    (let ((cs (and cs (coding-system-change-eol-conversion cs nil))))
+      ;; `undecided' means EditorConfig asked for nothing but `end_of_line',
+      ;; so return nil and leave the remaining detection functions their turn.
+      (unless (eq cs 'undecided) cs)))
+
   (editorconfig-mode 1)
   )
 
