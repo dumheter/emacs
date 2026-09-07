@@ -933,6 +933,10 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   :ensure t
   )
 
+(use-package protobuf-mode
+  :ensure t
+  )
+
 (use-package ansi-color
   :ensure nil ;; it's built-in, no need to install
   :hook (compilation-filter . my/ansi-colorize-compilation-buffer)
