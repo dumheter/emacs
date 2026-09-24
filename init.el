@@ -538,6 +538,22 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 (use-package p4
   :ensure t
   :config
+  (defun my-p4-server-version-with-hotfix (original &rest args)
+    "Parse suffixed Perforce server versions when ORIGINAL returns nil."
+    (or (apply original args)
+        (let ((version
+               (p4-with-temp-buffer '("info")
+                 (when (re-search-forward
+                        "^Server version: .*/\\([1-9][0-9]\\{3\\}\\)\\.[0-9]+\\(?:\\.[^/ \t\n]+\\)*/"
+                        nil t)
+                   (string-to-number (match-string 1))))))
+          (unless version
+            (error "Could not determine Perforce server version from p4 info"))
+          (push (cons (p4-current-server-port) version) p4-server-version-cache)
+          version)))
+
+  (advice-add 'p4-server-version :around #'my-p4-server-version-with-hotfix)
+
   (defvar-local my-p4-diff-patience-file nil
     "File shown in the current `p4-diff-patience' buffer.")
 
