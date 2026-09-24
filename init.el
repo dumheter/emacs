@@ -768,6 +768,15 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   (git-gutter:hide-gutter nil)
   )
 
+;; Async Perforce gutter for files in the TnT Projectile project.
+(load (expand-file-name "p4-gutter" user-emacs-directory))
+(use-package p4-gutter
+  :ensure nil
+  :after projectile
+  :config
+  (global-p4-gutter-mode +1)
+  )
+
 ;; Dependency for magit, fails to install it on its own.
 (use-package with-editor
   :ensure t
