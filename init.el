@@ -597,9 +597,9 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
            (action (plist-get info :action))
            (change (plist-get info :change)))
       (unless action
-        (user-error "File is tracked in Perforce but is not open for edit"))
-      (unless (string= action "edit")
-        (user-error "File is open for %s, not edit" action))
+        (user-error "File is tracked in Perforce but is not open for edit or add"))
+      (unless (member action '("edit" "add"))
+        (user-error "File is open for %s, not edit or add" action))
       (unless change
         (error "Perforce did not report a changelist for %s" file))
       (let ((text (format "We are working on CL %s." change)))
