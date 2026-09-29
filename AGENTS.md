@@ -79,3 +79,8 @@ These instructions apply to the entire repository.
 - For `symbols-server.el` changes, verify behavior with the external `symbols`
   executable when available. For `treesit-utils.el`, verify with the C++ grammar
   installed.
+
+## Completing Work
+
+- Always commit completed work. End each task with a commit containing only that
+  task's changes.
