@@ -38,7 +38,7 @@
 
 ;;; Installation:
 
-;; Loaded from this repository by the local use-package declaration in init.el.
+;; Loaded from local-packages by the use-package declaration in init.el.
 ;;
 ;; By default, the P4 global key bindings start with C-x p. If you
 ;; prefer a different key prefix, then you should customize the

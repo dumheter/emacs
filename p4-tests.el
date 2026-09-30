@@ -1,7 +1,7 @@
 ;;; p4-tests.el --- Tests for the local Perforce integration -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Run with emacs --batch -Q -L . -l p4-tests.el -f ert-run-tests-batch-and-exit.
+;; Run with emacs --batch -Q -L local-packages -l p4-tests.el -f ert-run-tests-batch-and-exit.
 
 ;;; Code:
 

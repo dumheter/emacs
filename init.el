@@ -539,7 +539,7 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   :ensure nil
   :demand t
   :init
-  (add-to-list 'load-path user-emacs-directory))
+  (add-to-list 'load-path (expand-file-name "local-packages" user-emacs-directory)))
 
 (use-package git-gutter
   :ensure t
