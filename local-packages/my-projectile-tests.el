@@ -3,7 +3,8 @@
 ;;; Commentary:
 ;; Run unit or integration tests directly, or discover and run their Google
 ;; Test cases in parallel.  The batch buffer summarizes results and folds
-;; each failed case's verbose rerun output under its own heading.
+;; each failed case's verbose rerun output under its own heading.  The final
+;; summary includes the total elapsed time.
 
 ;;; Code:
 
@@ -65,7 +66,7 @@ With prefix ARG, force the command prompt."
 (cl-defstruct my-projectile-tests--batch
   kind root executable flags buffer cpus workers tests results logs
   errors shards-done rerun-queue reruns-total reruns-done active processes
-  finished cancelled)
+  start-time elapsed finished cancelled)
 
 (defvar-local my-projectile-tests--current-batch nil)
 
@@ -112,6 +113,8 @@ Press TAB or RET on a failed test to expand its rerun logs."
                         passed (length (my-projectile-tests--batch-tests batch))))
         (when (my-projectile-tests--batch-tests batch)
           (insert (format " (%d failed, %d skipped, %d not run)" failed skipped unrun)))
+        (when final
+          (insert (format " in %.2f seconds" (my-projectile-tests--batch-elapsed batch))))
         (insert "\n")
         (if final
             (if (my-projectile-tests--batch-workers batch)
@@ -147,7 +150,9 @@ Press TAB or RET on a failed test to expand its rerun logs."
 
 (defun my-projectile-tests--finish (batch)
   "Finish BATCH and report any errors."
-  (setf (my-projectile-tests--batch-finished batch) t)
+  (setf (my-projectile-tests--batch-elapsed batch)
+        (float-time (time-since (my-projectile-tests--batch-start-time batch)))
+        (my-projectile-tests--batch-finished batch) t)
   (my-projectile-tests--render batch t)
   (if (my-projectile-tests--batch-errors batch)
       (message "Projectile batch tests finished with errors; see %s"
@@ -346,7 +351,8 @@ Press TAB or RET on a failed test to expand its rerun logs."
   "Discover and run KIND's Google Test cases in parallel.
 Interactively select unit or integration tests.  Half of the available
 logical CPUs run disjoint shards.  Failed cases are rerun with logging
-enabled; press TAB on a failure in the result buffer to inspect its logs."
+enabled; press TAB on a failure in the result buffer to inspect its logs.
+The final summary reports total elapsed time in seconds."
   (interactive)
   (let* ((kind (let ((selection
                       (or kind (intern (completing-read "Batch tests (unit/integration): "
@@ -385,6 +391,7 @@ enabled; press TAB on a failure in the result buffer to inspect its logs."
       (add-hook 'kill-buffer-hook #'my-projectile-tests--cancel nil t))
     (my-projectile-tests--render batch)
     (display-buffer buffer)
+    (setf (my-projectile-tests--batch-start-time batch) (current-time))
     (condition-case err
         (my-projectile-tests--start-process batch 'listing)
       (error
