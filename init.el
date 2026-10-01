@@ -17,7 +17,8 @@
 ;;   "--background-index=false"
 ;;
 ;; Pause on a C or C++ type name for clangd hover (including size when available).
-;; Use C-c l h to request the hover immediately.
+;; C-g hides the automatic hover until point moves or the buffer changes;
+;; symbol highlights remain visible. Use C-c l h to request hover immediately.
 ;; C and C++ buffers also highlight symbol references and show breadcrumbs.
 ;;
 ;; ### Windows Config
@@ -652,6 +653,49 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 (defvar-local my-lsp-bridge-hover-timer nil
   "Idle timer for C and C++ symbol hover.")
 
+(defvar-local my-lsp-bridge-hover-dismissed nil
+  "Point and buffer change tick where automatic hover was dismissed.")
+
+(defvar-local my-lsp-bridge-quit-command nil
+  "Non-nil while handling C-g in this buffer.")
+
+(defun my-lsp-bridge-hover-dismissed-p ()
+  "Return non-nil if automatic hover is dismissed at point."
+  (and my-lsp-bridge-hover-dismissed
+       (equal my-lsp-bridge-hover-dismissed
+              (cons (point) (buffer-chars-modified-tick)))))
+
+(defun my-lsp-bridge-popup-documentation ()
+  "Show documentation even when automatic hover was dismissed."
+  (interactive)
+  (setq my-lsp-bridge-hover-dismissed nil)
+  (lsp-bridge-popup-documentation))
+
+(defun my-lsp-bridge-popup-documentation-unless-dismissed (original &rest args)
+  "Ignore delayed hover responses after C-g; otherwise call ORIGINAL with ARGS."
+  (unless (with-current-buffer (window-buffer (selected-window))
+            (my-lsp-bridge-hover-dismissed-p))
+    (apply original args)))
+
+(defun my-lsp-bridge-preserve-highlight-on-quit (original)
+  "Call ORIGINAL except when C-g should leave C/C++ highlights in place."
+  (unless (and my-lsp-bridge-quit-command
+               (memq major-mode '(c-mode c++-mode c-ts-mode c++-ts-mode))
+               (bound-and-true-p lsp-bridge-mode)
+               lsp-bridge-enable-document-highlight)
+    (funcall original)))
+
+(defun my-lsp-bridge-dismiss-hover-on-quit ()
+  "Dismiss automatic hover on C-g without stopping document highlights."
+  (setq my-lsp-bridge-quit-command (eq this-command 'keyboard-quit))
+  (when my-lsp-bridge-quit-command
+    (when my-lsp-bridge-hover-timer
+      (cancel-timer my-lsp-bridge-hover-timer))
+    (setq my-lsp-bridge-hover-timer nil
+          my-lsp-bridge-hover-dismissed
+          (cons (point) (buffer-chars-modified-tick)))
+    (lsp-bridge-hide-doc-tooltip)))
+
 (defun my-lsp-bridge-activate-c-family-display ()
   "Enable C and C++ display modes once lsp-bridge is ready."
   (when (lsp-bridge-call-file-api-p)
@@ -667,19 +711,24 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
                  (bound-and-true-p lsp-bridge-mode))
         (my-lsp-bridge-activate-c-family-display)
         (when (and (= (point) position)
-                   (bounds-of-thing-at-point 'symbol))
+                   (bounds-of-thing-at-point 'symbol)
+                   (not (my-lsp-bridge-hover-dismissed-p)))
           (lsp-bridge-popup-documentation))))))
 
 (defun my-lsp-bridge-schedule-hover ()
   "Schedule symbol hover after a short pause in a C or C++ buffer."
   (when my-lsp-bridge-hover-timer
     (cancel-timer my-lsp-bridge-hover-timer))
-  (setq my-lsp-bridge-hover-timer
-        (run-with-idle-timer 0.7 nil #'my-lsp-bridge-hover-at-point
-                             (current-buffer) (point))))
+  (setq my-lsp-bridge-hover-timer nil)
+  (unless (my-lsp-bridge-hover-dismissed-p)
+    (setq my-lsp-bridge-hover-dismissed nil)
+    (setq my-lsp-bridge-hover-timer
+          (run-with-idle-timer 0.7 nil #'my-lsp-bridge-hover-at-point
+                               (current-buffer) (point)))))
 
 (defun my-lsp-bridge-enable-c-family-features ()
   "Enable C and C++ language-server display features in this buffer."
+  (add-hook 'pre-command-hook #'my-lsp-bridge-dismiss-hover-on-quit nil t)
   (add-hook 'post-command-hook #'my-lsp-bridge-schedule-hover nil t)
   (add-hook 'lsp-bridge-mode-hook #'my-lsp-bridge-cleanup-c-family-display nil t)
   (setq-local lsp-bridge-enable-document-highlight t)
@@ -713,9 +762,13 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   (define-key my-lsp-bridge-keymap (kbd "r") #'lsp-bridge-find-references)
   (define-key my-lsp-bridge-keymap (kbd "s") #'lsp-bridge-workspace-list-symbol-at-point)
   (define-key my-lsp-bridge-keymap (kbd "t") #'lsp-bridge-workspace-list-symbols)
-  (define-key my-lsp-bridge-keymap (kbd "h") #'lsp-bridge-popup-documentation)
+  (define-key my-lsp-bridge-keymap (kbd "h") #'my-lsp-bridge-popup-documentation)
 
   :config
+  (advice-add 'lsp-bridge-popup-documentation--callback :around
+              #'my-lsp-bridge-popup-documentation-unless-dismissed)
+  (advice-add 'lsp-bridge-document-highlight-cleanup :around
+              #'my-lsp-bridge-preserve-highlight-on-quit)
   (setq lsp-bridge-get-project-path-by-filepath
         (lambda (filepath)
           (let* ((file (file-truename filepath))
