@@ -490,7 +490,7 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 
 (use-package my-projectile-tests
   :ensure nil
-  :load-path user-emacs-directory
+  :load-path "local-packages"
   :after projectile
   :demand t
   :bind (:map projectile-command-map

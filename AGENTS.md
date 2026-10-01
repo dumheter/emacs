@@ -6,6 +6,8 @@ These instructions apply to the entire repository.
 
 - `init.el` is the main configuration and owns package setup, global settings,
   keybindings, hooks, and small personal helper functions.
+- `local-packages/` contains local libraries loaded via `load-path`, including
+  `my-projectile-tests.el` and `p4.el`.
 - `treesit-utils.el` is a local library for C++ symbol discovery with tree-sitter.
 - `symbols-server.el` is a local client for the external `symbols` executable.
 - `snippets/` contains tracked yasnippet templates.
@@ -36,6 +38,10 @@ These instructions apply to the entire repository.
 
 - Configure packages in `init.el` with `use-package`. Use `:ensure nil` for
   built-in packages and local libraries.
+- Never add `user-emacs-directory` (`~/.emacs.d/`) itself to `load-path`; Emacs
+  warns about it and may load unintended files. Put libraries needing
+  `load-path` in `local-packages/` and point `:load-path` there instead. Load
+  any libraries kept in the repository root by explicit file path.
 - Put settings needed before package loading in `:init`; put code requiring the
   loaded package in `:config`.
 - Prefer `:hook` and `:bind`/`:bind-keymap` in `use-package` declarations.
