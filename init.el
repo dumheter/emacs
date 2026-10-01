@@ -16,6 +16,9 @@
 ;;   "--completion-style=detailed",
 ;;   "--background-index=false"
 ;;
+;; Pause on a C++ struct name for clangd hover (including size when available).
+;; Use C-c l h to request the hover immediately.
+;;
 ;; ### Windows Config
 ;; #### Open files in same window
 ;; Accociate your files with emacsclientw.exe. This will open a new window.
@@ -627,12 +630,40 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 (defvar my-lsp-bridge-keymap (make-sparse-keymap)
   "Keymap for my custom lsp-bridge bindings.")
 
+(defvar-local my-lsp-bridge-hover-timer nil
+  "Idle timer for C++ symbol hover.")
+
+(defun my-lsp-bridge-hover-at-point (buffer position)
+  "Show hover in BUFFER if point is still at POSITION."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq my-lsp-bridge-hover-timer nil)
+      (when (and (eq (window-buffer (selected-window)) buffer)
+                 (= (point) position)
+                 (bound-and-true-p lsp-bridge-mode)
+                 (bounds-of-thing-at-point 'symbol))
+        (lsp-bridge-popup-documentation)))))
+
+(defun my-lsp-bridge-schedule-hover ()
+  "Schedule symbol hover after a short pause in a C++ buffer."
+  (when my-lsp-bridge-hover-timer
+    (cancel-timer my-lsp-bridge-hover-timer))
+  (setq my-lsp-bridge-hover-timer
+        (run-with-idle-timer 0.7 nil #'my-lsp-bridge-hover-at-point
+                             (current-buffer) (point))))
+
+(defun my-lsp-bridge-enable-hover ()
+  "Enable automatic symbol hover in this C++ buffer."
+  (add-hook 'post-command-hook #'my-lsp-bridge-schedule-hover nil t))
+
 (use-package lsp-bridge
   :load-path "~/lsp-bridge"
   :demand t
   :bind
   (("M-." . my-lsp-bridge-find-def-with-xref)
    )
+  :hook ((c++-mode . my-lsp-bridge-enable-hover)
+         (c++-ts-mode . my-lsp-bridge-enable-hover))
   :init
   (define-key global-map (kbd "C-c l") my-lsp-bridge-keymap)
   (define-key my-lsp-bridge-keymap (kbd "q") #'lsp-bridge-restart-process)
@@ -643,6 +674,7 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   (define-key my-lsp-bridge-keymap (kbd "r") #'lsp-bridge-find-references)
   (define-key my-lsp-bridge-keymap (kbd "s") #'lsp-bridge-workspace-list-symbol-at-point)
   (define-key my-lsp-bridge-keymap (kbd "t") #'lsp-bridge-workspace-list-symbols)
+  (define-key my-lsp-bridge-keymap (kbd "h") #'lsp-bridge-popup-documentation)
 
   :config
   (setq lsp-bridge-get-project-path-by-filepath
