@@ -5,6 +5,12 @@
 ;; Test cases in parallel.  A settings buffer launches the batch and the
 ;; result buffer folds each failed case's verbose rerun output under its own
 ;; heading.  The final summary includes the total elapsed time.
+;;
+;; Batches are run by the external emacs-test-runner program (see README.md),
+;; which Emacs starts per batch and drives over a single pipe.  The runner
+;; discovers the cases, runs them in parallel and writes each process's
+;; output to files that Emacs reads, so the thread count is not limited by
+;; the number of process pipes Emacs can create.
 
 ;;; Code:
 
@@ -27,6 +33,22 @@
 (defvar my-projectile-tests-batch-settings nil
   "Saved batch settings: :exclude-slow, :threads and :filter.
 The thread count defaults to half the available logical CPUs.")
+
+(defvar my-projectile-tests-runner-program
+  (expand-file-name (concat "emacs-test-runner/build/emacs-test-runner"
+                            (if (eq system-type 'windows-nt) ".exe" ""))
+                    user-emacs-directory)
+  "The emacs-test-runner executable used for batch tests.
+Build it as described in README.md.")
+
+(defconst my-projectile-tests--runner-protocol "1"
+  "Protocol version this library expects from emacs-test-runner.")
+
+(defconst my-projectile-tests--max-threads 1024
+  "Largest thread count emacs-test-runner accepts.")
+
+(defconst my-projectile-tests--log-excerpt-size 20000
+  "Number of trailing log characters shown for a batch error.")
 
 (defun my-projectile-tests--tnt-p (root)
   "Return non-nil if ROOT is a TnT project root."
@@ -70,8 +92,8 @@ With prefix ARG, force the command prompt."
 
 (cl-defstruct my-projectile-tests--batch
   kind root executable flags buffer cpus thread-limit threads exclude-slow filter
-  tests results logs errors threads-done rerun-queue reruns-total reruns-done active processes
-  start-time elapsed finished cancelled)
+  process pending outdir discovering tests results logs errors tests-done
+  rerun-names reruns-total reruns-done start-time elapsed finished cancelled)
 
 (defvar-local my-projectile-tests--current-batch nil)
 (defvar-local my-projectile-tests--project-root nil)
@@ -134,13 +156,6 @@ or u/i to run unit/integration tests with the displayed settings.")
             (propertize "[i]  INTEGRATION TESTS"
                         'face '(:inherit success :weight bold))
             "\n")
-    (when (and (eq system-type 'windows-nt) (> thread-count 16))
-      (insert "\n  "
-              (propertize "NOTE" 'face '(:inherit warning :weight bold))
-              "  "
-              (propertize "High thread counts can exhaust Emacs process pipes."
-                          'face 'warning)
-              "\n        Try 12-16 threads if you see \"Too many open files\".\n"))
     (insert "\n  "
             (propertize "[q]  Close settings" 'face 'shadow)
             "\n")
@@ -160,8 +175,9 @@ or u/i to run unit/integration tests with the displayed settings.")
   (let ((threads (read-number "Test threads: "
                               (or (plist-get my-projectile-tests-batch-settings :threads)
                                   (my-projectile-tests--default-threads)))))
-    (unless (and (integerp threads) (> threads 0))
-      (user-error "Test threads must be a positive integer"))
+    (unless (and (integerp threads) (<= 1 threads my-projectile-tests--max-threads))
+      (user-error "Test threads must be an integer from 1 to %d"
+                  my-projectile-tests--max-threads))
     (setq my-projectile-tests-batch-settings
           (plist-put my-projectile-tests-batch-settings :threads threads))
     (my-projectile-tests--render-settings)))
@@ -201,27 +217,53 @@ Press TAB or RET on a failed test to expand its rerun logs."
 (define-key my-projectile-tests-mode-map (kbd "TAB") #'outline-toggle-children)
 (define-key my-projectile-tests-mode-map (kbd "RET") #'outline-toggle-children)
 
+(defun my-projectile-tests--delete-outdir (batch)
+  "Delete BATCH's runner output directory if it still exists."
+  (when-let* ((outdir (my-projectile-tests--batch-outdir batch)))
+    (when (file-directory-p outdir)
+      (ignore-errors (delete-directory outdir t)))))
+
+(defun my-projectile-tests--discard (batch)
+  "Stop BATCH's runner and delete its output directory."
+  (let ((process (my-projectile-tests--batch-process batch)))
+    (if (not (process-live-p process))
+        (my-projectile-tests--delete-outdir batch)
+      (set-process-filter process #'ignore)
+      (set-process-sentinel process
+                            (lambda (proc _event)
+                              (unless (process-live-p proc)
+                                (my-projectile-tests--delete-outdir batch))))
+      (ignore-errors (process-send-string process "stop\n"))
+      (run-at-time 2 nil (lambda ()
+                           (when (process-live-p process)
+                             (delete-process process))
+                           (my-projectile-tests--delete-outdir batch))))))
+
 (defun my-projectile-tests--cancel ()
-  "Stop processes when their batch results buffer is killed."
+  "Stop the batch runner and delete its output when its buffer is killed."
   (when-let* ((batch my-projectile-tests--current-batch))
     (unless (my-projectile-tests--batch-finished batch)
       (setf (my-projectile-tests--batch-cancelled batch) t)
-      (dolist (process (my-projectile-tests--batch-processes batch))
-        (set-process-sentinel process #'ignore)
+      (message "Cancelled Projectile batch tests"))
+    (my-projectile-tests--discard batch)))
+
+(defun my-projectile-tests--kill-runners ()
+  "Kill batch runners and delete their output directories."
+  (dolist (buffer (buffer-list))
+    (when-let* ((batch (buffer-local-value 'my-projectile-tests--current-batch buffer)))
+      (let ((process (my-projectile-tests--batch-process batch)))
         (when (process-live-p process)
-          (delete-process process))
-        (when-let* ((xml (process-get process 'my-projectile-tests--xml)))
-          (when (file-exists-p xml)
-            (delete-file xml)))
-        (when (buffer-live-p (process-buffer process))
-          (kill-buffer (process-buffer process))))
-      (message "Cancelled Projectile batch tests"))))
+          (delete-process process)))
+      (my-projectile-tests--delete-outdir batch))))
+
+(add-hook 'kill-emacs-hook #'my-projectile-tests--kill-runners)
 
 (defun my-projectile-tests--render (batch &optional final)
   "Update BATCH's result buffer; fold failures if FINAL is non-nil."
   (when (buffer-live-p (my-projectile-tests--batch-buffer batch))
     (with-current-buffer (my-projectile-tests--batch-buffer batch)
       (let ((inhibit-read-only t)
+            (threads (my-projectile-tests--batch-threads batch))
             (passed 0) (failed 0) (skipped 0) (unrun 0))
         (dolist (test (my-projectile-tests--batch-tests batch))
           (pcase (gethash test (my-projectile-tests--batch-results batch))
@@ -246,24 +288,23 @@ Press TAB or RET on a failed test to expand its rerun logs."
           (insert (format " in %.2f seconds" (my-projectile-tests--batch-elapsed batch))))
         (insert "\n")
         (if final
-            (if (my-projectile-tests--batch-threads batch)
+            (if (my-projectile-tests--batch-tests batch)
                 (insert (format "%d %s on %d logical CPUs\n"
-                                (my-projectile-tests--batch-threads batch)
-                                (if (= (my-projectile-tests--batch-threads batch) 1)
-                                    "thread" "threads")
+                                threads (if (= threads 1) "thread" "threads")
                                 (my-projectile-tests--batch-cpus batch)))
               (insert (if (my-projectile-tests--batch-errors batch)
-                          "No threads started\n"
+                          "No tests ran\n"
                         "No tests matched the batch settings\n")))
           (insert (cond
                    ((my-projectile-tests--batch-reruns-total batch)
                     (format "Rerunning failures: %d/%d completed\n"
                             (my-projectile-tests--batch-reruns-done batch)
                             (my-projectile-tests--batch-reruns-total batch)))
-                   ((my-projectile-tests--batch-tests batch)
-                    (format "Running threads: %d/%d completed\n"
-                            (my-projectile-tests--batch-threads-done batch)
-                            (my-projectile-tests--batch-threads batch)))
+                   (threads
+                    (format "Running tests: %d/%d completed on %d %s\n"
+                            (my-projectile-tests--batch-tests-done batch)
+                            (length (my-projectile-tests--batch-tests batch))
+                            threads (if (= threads 1) "thread" "threads")))
                    (t "Discovering test cases...\n"))))
         (when (and final (my-projectile-tests--batch-tests batch))
           (dolist (test (my-projectile-tests--batch-tests batch))
@@ -279,41 +320,50 @@ Press TAB or RET on a failed test to expand its rerun logs."
         (when final
           (outline-hide-body))))))
 
-(defun my-projectile-tests--finish (batch)
-  "Finish BATCH and report any errors."
-  (setf (my-projectile-tests--batch-elapsed batch)
-        (float-time (time-since (my-projectile-tests--batch-start-time batch)))
-        (my-projectile-tests--batch-finished batch) t)
-  (my-projectile-tests--render batch t)
-  (if (my-projectile-tests--batch-errors batch)
-      (message "Projectile batch tests finished with errors; see %s"
-               (buffer-name (my-projectile-tests--batch-buffer batch)))
-    (message "Projectile batch tests finished; see %s"
-             (buffer-name (my-projectile-tests--batch-buffer batch)))))
+(defun my-projectile-tests--send (batch &rest fields)
+  "Send the runner command made of FIELDS to BATCH's runner."
+  (dolist (field fields)
+    (when (string-match-p "[\t\n\r]" field)
+      (error "Runner command field contains a tab or line break: %S" field)))
+  (process-send-string (my-projectile-tests--batch-process batch)
+                       (concat (string-join fields "\t") "\n")))
 
-(defun my-projectile-tests--parse-list (output)
-  "Return enabled Google Test case names found in discovery OUTPUT."
-  (let (suite tests)
-    (dolist (line (split-string output "\n"))
-      (cond
-       ((string-match "^\\([^[:space:]#]+\\.\\)\\(?:[[:space:]]*#.*\\)?[[:space:]]*$" line)
-        (setq suite (match-string 1 line)))
-       ((and suite
-             (string-match "^  \\([^[:space:]#]+\\)\\(?:[[:space:]]*#.*\\)?[[:space:]]*$" line))
-        (let ((test (match-string 1 line)))
-          (unless (or (string-match-p "\\(?:\\`\\|/\\)DISABLED_" suite)
-                      (string-prefix-p "DISABLED_" test))
-            (push (concat suite test) tests))))))
-    (delete-dups (nreverse tests))))
+(defun my-projectile-tests--finish (batch &optional stop)
+  "Finish BATCH and report any errors.
+Tell the runner to exit, killing its test processes if STOP is non-nil.
+Its log files remain until the result buffer is killed or reused."
+  (unless (my-projectile-tests--batch-finished batch)
+    (setf (my-projectile-tests--batch-elapsed batch)
+          (float-time (time-since (my-projectile-tests--batch-start-time batch)))
+          (my-projectile-tests--batch-finished batch) t)
+    (let ((process (my-projectile-tests--batch-process batch)))
+      (when (process-live-p process)
+        (ignore-errors (process-send-string process (if stop "stop\n" "quit\n")))))
+    (my-projectile-tests--render batch t)
+    (if (my-projectile-tests--batch-errors batch)
+        (message "Projectile batch tests finished with errors; see %s"
+                 (buffer-name (my-projectile-tests--batch-buffer batch)))
+      (message "Projectile batch tests finished; see %s"
+               (buffer-name (my-projectile-tests--batch-buffer batch))))))
 
-(defun my-projectile-tests--select-tests (batch tests)
-  "Select discovered TESTS according to BATCH's saved settings."
-  (cl-remove-if-not
-   (lambda (test)
-     (and (or (not (my-projectile-tests--batch-exclude-slow batch))
-              (not (string-match-p "\\(?:\\`\\|[./]\\)SLOW" test)))
-          (string-search (my-projectile-tests--batch-filter batch) test)))
-   tests))
+(defun my-projectile-tests--log-text (path &optional full)
+  "Return the log file at PATH preceded by its name.
+Unless FULL, keep only the last `my-projectile-tests--log-excerpt-size'
+characters."
+  (cond
+   ((or (null path) (string-empty-p path)) "No log was written.\n")
+   ((not (file-readable-p path)) (format "Log file is missing: %s\n" path))
+   (t (with-temp-buffer
+        (insert-file-contents path)
+        (when (and (not full)
+                   (> (buffer-size) my-projectile-tests--log-excerpt-size))
+          (delete-region (point-min)
+                         (- (point-max) my-projectile-tests--log-excerpt-size))
+          (goto-char (point-min))
+          (insert "[...]\n"))
+        (goto-char (point-min))
+        (insert (format "Log file: %s\n\n" path))
+        (buffer-string)))))
 
 (defun my-projectile-tests--read-xml (batch names path)
   "Record BATCH results for NAMES from Google Test XML at PATH."
@@ -342,168 +392,179 @@ Press TAB or RET on a failed test to expand its rerun logs."
       (unless (gethash name reported)
         (puthash name 'not-run (my-projectile-tests--batch-results batch))))))
 
-(defun my-projectile-tests--start-process (batch stage &optional names)
-  "Start BATCH process for STAGE, running NAMES for a thread or rerun."
-  (let* ((output (generate-new-buffer " *projectile-tests-output*"))
-         (xml (when (eq stage 'thread) (make-temp-file "projectile-tests-" nil ".xml")))
-         (default-directory (my-projectile-tests--batch-root batch))
-         (args (append
-                (if (eq stage 'rerun)
-                    (remove "-disableLogs" (my-projectile-tests--batch-flags batch))
-                  (my-projectile-tests--batch-flags batch))
-                (pcase stage
-                  ('listing '("--gtest_list_tests"))
-                  ('thread (list (concat "--gtest_filter=" (mapconcat #'identity names ":"))
-                                (concat "--gtest_output=xml:" xml)))
-                  ('rerun (list (concat "--gtest_filter=" (car names))))))))
-    (condition-case err
-        (let ((process (make-process
-                        :name "projectile-tests"
-                        :buffer output
-                        :command (cons (my-projectile-tests--batch-executable batch) args)
-                        :noquery t
-                        :sentinel #'my-projectile-tests--sentinel)))
-          (process-put process 'my-projectile-tests--batch batch)
-          (process-put process 'my-projectile-tests--stage stage)
-          (process-put process 'my-projectile-tests--names names)
-          (process-put process 'my-projectile-tests--xml xml)
-          (push process (my-projectile-tests--batch-processes batch)))
-      (error
-       (kill-buffer output)
-       (when (and xml (file-exists-p xml))
-         (delete-file xml))
-       (signal (car err) (cdr err))))))
-
-(defun my-projectile-tests--explain-process-error (text)
-  "Add recovery advice if TEXT reports exhausted Emacs process pipes."
-  (if (string-match-p "Creating pipe: Too many open files" text)
-      (concat text "\nEmacs ran out of process pipes. Lower the thread count (t) and rerun.")
-    text))
-
-(defun my-projectile-tests--start-reruns (batch)
-  "Schedule failed BATCH tests, without exceeding its thread count."
-  (while (and (my-projectile-tests--batch-rerun-queue batch)
-              (< (my-projectile-tests--batch-active batch)
-                 (my-projectile-tests--batch-threads batch)))
-    (let ((name (pop (my-projectile-tests--batch-rerun-queue batch))))
-      (condition-case err
-          (progn
-            (my-projectile-tests--start-process batch 'rerun (list name))
-            (cl-incf (my-projectile-tests--batch-active batch)))
-        (error
-         (push (format "Could not rerun %s: %s" name
-                       (my-projectile-tests--explain-process-error
-                        (error-message-string err)))
-               (my-projectile-tests--batch-errors batch))
-         (cl-incf (my-projectile-tests--batch-reruns-done batch))
-         (puthash name (format "Rerun could not start: %s\n"
-                               (my-projectile-tests--explain-process-error
-                                (error-message-string err)))
-                  (my-projectile-tests--batch-logs batch))))))
-  (when (and (null (my-projectile-tests--batch-rerun-queue batch))
-             (zerop (my-projectile-tests--batch-active batch)))
-    (my-projectile-tests--finish batch)))
-
-(defun my-projectile-tests--thread-finished (batch names xml exit-code output)
-  "Record a BATCH thread's NAMES from XML, EXIT-CODE and OUTPUT."
+(defun my-projectile-tests--chunk-finished (batch names exit-code xml log
+                                                  &optional start-error)
+  "Record BATCH's test process for NAMES, which exited with EXIT-CODE.
+Read results from Google Test XML and keep LOG for errors.  START-ERROR
+is the reason the runner could not start the process."
   (condition-case err
-      (if (and xml (file-exists-p xml))
-          (my-projectile-tests--read-xml batch names xml)
-        (error "Thread produced no Google Test XML"))
+      (cond (start-error (error "Could not start test process: %s" start-error))
+            ((file-exists-p xml) (my-projectile-tests--read-xml batch names xml))
+            (t (error "Test process produced no Google Test XML")))
     (error
      (dolist (name names)
        (puthash name 'not-run (my-projectile-tests--batch-results batch)))
-     (let* ((pipe-exhausted (string-match-p "Creating pipe: Too many open files" output))
-            (description (format "Thread result error: %s\n%s"
-                                 (error-message-string err)
-                                 (my-projectile-tests--explain-process-error output))))
-       (unless (and pipe-exhausted
-                    (member description (my-projectile-tests--batch-errors batch)))
-         (push description (my-projectile-tests--batch-errors batch))))))
-  (when (and (not (zerop exit-code))
+     (push (format "Test result error for %d %s: %s\n%s"
+                   (length names) (if (cdr names) "tests" "test")
+                   (error-message-string err)
+                   (if start-error "" (my-projectile-tests--log-text log)))
+           (my-projectile-tests--batch-errors batch))))
+  (when (and (not start-error)
+             (not (zerop exit-code))
              (cl-every (lambda (name)
                          (eq (gethash name (my-projectile-tests--batch-results batch))
                              'passed))
                        names))
-    (push (format "Thread exited with status %d without reported failures:\n%s"
-                  exit-code output)
+    (push (format "Test process exited with status %d without reported failures:\n%s"
+                  exit-code (my-projectile-tests--log-text log))
           (my-projectile-tests--batch-errors batch)))
-  (cl-incf (my-projectile-tests--batch-threads-done batch))
-  (if (= (my-projectile-tests--batch-threads-done batch)
-         (my-projectile-tests--batch-threads batch))
-      (progn
-        (setf (my-projectile-tests--batch-rerun-queue batch)
-              (cl-remove-if-not
-               (lambda (name)
-                 (eq (gethash name (my-projectile-tests--batch-results batch)) 'failed))
-               (my-projectile-tests--batch-tests batch))
-              (my-projectile-tests--batch-reruns-total batch)
-              (length (my-projectile-tests--batch-rerun-queue batch))
-              (my-projectile-tests--batch-reruns-done batch) 0)
-        (my-projectile-tests--render batch)
-        (my-projectile-tests--start-reruns batch))
-    (unless (my-projectile-tests--batch-finished batch)
-      (my-projectile-tests--render batch))))
+  (cl-incf (my-projectile-tests--batch-tests-done batch) (length names))
+  (my-projectile-tests--render batch))
 
-(defun my-projectile-tests--start-threads (batch tests)
-  "Partition TESTS into BATCH's threads and start each one."
-  (let* ((threads (min (length tests) (my-projectile-tests--batch-thread-limit batch)))
-         (groups (make-vector threads nil)))
-    (setf (my-projectile-tests--batch-tests batch) tests
-          (my-projectile-tests--batch-threads batch) threads)
-    (cl-loop for test in tests for index from 0
-             do (push test (aref groups (mod index threads))))
-    (dotimes (index threads)
-      (let ((names (nreverse (aref groups index))))
+(defun my-projectile-tests--start-reruns (batch)
+  "Ask BATCH's runner to rerun each failed test with logging enabled."
+  (let ((failed (cl-remove-if-not
+                 (lambda (name)
+                   (eq (gethash name (my-projectile-tests--batch-results batch)) 'failed))
+                 (my-projectile-tests--batch-tests batch))))
+    (setf (my-projectile-tests--batch-rerun-names batch) (vconcat failed)
+          (my-projectile-tests--batch-reruns-total batch) (length failed)
+          (my-projectile-tests--batch-reruns-done batch) 0)
+    (if (null failed)
+        (my-projectile-tests--finish batch)
+      (my-projectile-tests--render batch)
+      (cl-loop for name in failed for id from 0
+               do (my-projectile-tests--send batch "rerun" (number-to-string id) name)))))
+
+(defun my-projectile-tests--rerun-name (batch id)
+  "Return the test name of BATCH's rerun ID."
+  (aref (my-projectile-tests--batch-rerun-names batch) (string-to-number id)))
+
+(defun my-projectile-tests--rerun-finished (batch id text)
+  "Record TEXT as the log of BATCH's rerun ID; finish after the last one."
+  (puthash (my-projectile-tests--rerun-name batch id) text
+           (my-projectile-tests--batch-logs batch))
+  (cl-incf (my-projectile-tests--batch-reruns-done batch))
+  (if (= (my-projectile-tests--batch-reruns-done batch)
+         (my-projectile-tests--batch-reruns-total batch))
+      (my-projectile-tests--finish batch)
+    (my-projectile-tests--render batch)))
+
+(defun my-projectile-tests--handle-event (batch fields)
+  "Update BATCH for the runner event made of FIELDS."
+  (pcase fields
+    (`("hello" ,_ ,version)
+     (unless (equal version my-projectile-tests--runner-protocol)
+       (error "emacs-test-runner speaks protocol %s but %s is required; rebuild it (see README.md)"
+              version my-projectile-tests--runner-protocol)))
+    (`("test" ,name)
+     (push name (my-projectile-tests--batch-discovering batch)))
+    (`("discovered" ,_total ,_selected ,threads)
+     (setf (my-projectile-tests--batch-tests batch)
+           (nreverse (my-projectile-tests--batch-discovering batch))
+           (my-projectile-tests--batch-discovering batch) nil
+           (my-projectile-tests--batch-threads batch) (string-to-number threads))
+     (my-projectile-tests--render batch))
+    (`("chunk-done" ,exit ,xml ,log . ,names)
+     (my-projectile-tests--chunk-finished batch names (string-to-number exit) xml log))
+    (`("chunk-failed" ,message . ,names)
+     (my-projectile-tests--chunk-finished batch names -1 nil nil message))
+    (`("run-finished")
+     (my-projectile-tests--start-reruns batch))
+    (`("rerun-done" ,id ,exit ,log)
+     (my-projectile-tests--rerun-finished
+      batch id (format "Rerun exit status: %s\n%s"
+                       exit (my-projectile-tests--log-text log t))))
+    (`("rerun-failed" ,id ,message)
+     (push (format "Could not rerun %s: %s"
+                   (my-projectile-tests--rerun-name batch id) message)
+           (my-projectile-tests--batch-errors batch))
+     (my-projectile-tests--rerun-finished
+      batch id (format "Rerun could not start: %s\n" message)))
+    (`("discover-failed" ,message ,log)
+     (push (format "Could not list Google Test cases: %s\n%s"
+                   message (if (string-empty-p log) ""
+                             (my-projectile-tests--log-text log)))
+           (my-projectile-tests--batch-errors batch))
+     (my-projectile-tests--finish batch t))
+    (`("error" ,message)
+     (push (format "emacs-test-runner: %s" message)
+           (my-projectile-tests--batch-errors batch))
+     (my-projectile-tests--finish batch t))
+    (_
+     (push (format "Unexpected emacs-test-runner output: %s"
+                   (string-join fields "\t"))
+           (my-projectile-tests--batch-errors batch)))))
+
+(defun my-projectile-tests--runner-filter (process output)
+  "Handle each complete line of OUTPUT from the runner PROCESS."
+  (let* ((batch (process-get process 'my-projectile-tests--batch))
+         (lines (split-string (concat (my-projectile-tests--batch-pending batch) output)
+                              "\n")))
+    (setf (my-projectile-tests--batch-pending batch) (car (last lines)))
+    (dolist (line (butlast lines))
+      (setq line (string-remove-suffix "\r" line))
+      (unless (or (string-empty-p line)
+                  (my-projectile-tests--batch-finished batch)
+                  (my-projectile-tests--batch-cancelled batch))
         (condition-case err
-            (my-projectile-tests--start-process batch 'thread names)
+            (my-projectile-tests--handle-event batch (split-string line "\t"))
           (error
-           (my-projectile-tests--thread-finished
-            batch names nil -1 (error-message-string err))))))
-    (unless (my-projectile-tests--batch-finished batch)
-      (my-projectile-tests--render batch))))
+           (push (format "Could not handle runner output %S: %s"
+                         line (error-message-string err))
+                 (my-projectile-tests--batch-errors batch))
+           (my-projectile-tests--finish batch t)))))))
 
-(defun my-projectile-tests--sentinel (process _event)
-  "Collect PROCESS output and advance the batch when it finishes."
-  (when (memq (process-status process) '(exit signal))
-    (let* ((batch (process-get process 'my-projectile-tests--batch))
-           (stage (process-get process 'my-projectile-tests--stage))
-           (names (process-get process 'my-projectile-tests--names))
-           (xml (process-get process 'my-projectile-tests--xml))
-           (code (process-exit-status process))
-           (buffer (process-buffer process))
-           (output (with-current-buffer buffer (buffer-string))))
-      (setf (my-projectile-tests--batch-processes batch)
-            (delq process (my-projectile-tests--batch-processes batch)))
-      (unwind-protect
-          (unless (my-projectile-tests--batch-cancelled batch)
-            (pcase stage
-              ('listing
-               (let ((tests (and (zerop code) (my-projectile-tests--parse-list output))))
-                 (if tests
-                     (let ((selected (my-projectile-tests--select-tests batch tests)))
-                       (if selected
-                           (my-projectile-tests--start-threads batch selected)
-                         (my-projectile-tests--finish batch)))
-                   (push (format "Could not list Google Test cases (exit %d):\n%s"
-                                 code output)
-                         (my-projectile-tests--batch-errors batch))
-                   (my-projectile-tests--finish batch))))
-              ('thread
-               (my-projectile-tests--thread-finished batch names xml code output))
-              ('rerun
-               (puthash (car names)
-                        (format "Rerun exit status: %d\n\n%s" code output)
-                        (my-projectile-tests--batch-logs batch))
-               (cl-incf (my-projectile-tests--batch-reruns-done batch))
-               (cl-decf (my-projectile-tests--batch-active batch))
-               (my-projectile-tests--start-reruns batch)
-               (unless (my-projectile-tests--batch-finished batch)
-                 (my-projectile-tests--render batch)))))
-        (when (and xml (file-exists-p xml))
-          (delete-file xml))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
+(defun my-projectile-tests--runner-sentinel (process event)
+  "Report a runner PROCESS that exits, with EVENT, before its batch is done."
+  (unless (process-live-p process)
+    (let ((batch (process-get process 'my-projectile-tests--batch)))
+      (unless (or (my-projectile-tests--batch-finished batch)
+                  (my-projectile-tests--batch-cancelled batch))
+        (push (format "emacs-test-runner exited unexpectedly: %s" (string-trim event))
+              (my-projectile-tests--batch-errors batch))
+        (my-projectile-tests--finish batch t)))))
+
+(defun my-projectile-tests--runner ()
+  "Return the emacs-test-runner executable or explain how to build it."
+  (let ((program my-projectile-tests-runner-program))
+    (unless (and program (file-regular-p program) (file-executable-p program))
+      (user-error "emacs-test-runner is not built (%s); see \"Build emacs-test-runner\" in %s"
+                  program (expand-file-name "README.md" user-emacs-directory)))
+    program))
+
+(defun my-projectile-tests--start-runner (batch program)
+  "Start PROGRAM as BATCH's runner and send it the batch settings."
+  (let ((flags (my-projectile-tests--batch-flags batch))
+        (filter (my-projectile-tests--batch-filter batch))
+        (default-directory (my-projectile-tests--batch-root batch)))
+    (setf (my-projectile-tests--batch-outdir batch)
+          (make-temp-file "emacs-test-runner-" t))
+    (let ((process (make-process
+                    :name "emacs-test-runner"
+                    :command (list program)
+                    :connection-type 'pipe
+                    :coding 'utf-8-unix
+                    :noquery t
+                    :filter #'my-projectile-tests--runner-filter
+                    :sentinel #'my-projectile-tests--runner-sentinel)))
+      (process-put process 'my-projectile-tests--batch batch)
+      (setf (my-projectile-tests--batch-process batch) process))
+    (my-projectile-tests--send batch "exe" (my-projectile-tests--batch-executable batch))
+    (my-projectile-tests--send batch "cwd" (my-projectile-tests--batch-root batch))
+    (my-projectile-tests--send batch "outdir" (my-projectile-tests--batch-outdir batch))
+    (dolist (flag flags)
+      (my-projectile-tests--send batch "arg" flag))
+    (dolist (flag (remove "-disableLogs" flags))
+      (my-projectile-tests--send batch "rerun-arg" flag))
+    (my-projectile-tests--send batch "threads"
+                               (number-to-string
+                                (my-projectile-tests--batch-thread-limit batch)))
+    (unless (string-empty-p filter)
+      (my-projectile-tests--send batch "filter" filter))
+    (when (my-projectile-tests--batch-exclude-slow batch)
+      (my-projectile-tests--send batch "exclude-slow"))
+    (my-projectile-tests--send batch "run")))
 
 (defun my-projectile-tests--start-batch (kind root)
   "Discover and run KIND's Google Test cases in parallel from ROOT."
@@ -511,14 +572,16 @@ Press TAB or RET on a failed test to expand its rerun logs."
     (user-error "Test kind must be unit or integration"))
   (unless root
     (user-error "No project selected for batch tests"))
-  (let* ((settings my-projectile-tests-batch-settings)
+  (let* ((runner (my-projectile-tests--runner))
+         (settings my-projectile-tests-batch-settings)
          (tnt (my-projectile-tests--tnt-p root))
          (executable (if tnt
                          (expand-file-name
                           (concat "Local\\Bin\\Win64-Dll\\release\\"
                                   (alist-get kind my-projectile-tests--tnt-executables))
                           root)
-                       (read-file-name "Google Test executable: " root nil t)))
+                       (expand-file-name
+                        (read-file-name "Google Test executable: " root nil t))))
          (buffer (get-buffer-create (format "*Projectile %s batch tests*" kind)))
          (batch (make-my-projectile-tests--batch
                  :kind kind :root root :executable executable
@@ -530,17 +593,17 @@ Press TAB or RET on a failed test to expand its rerun logs."
                  :filter (or (plist-get settings :filter) "")
                  :results (make-hash-table :test 'equal)
                  :logs (make-hash-table :test 'equal)
-                 :threads-done 0 :active 0)))
+                 :tests-done 0)))
     (unless (and (file-regular-p executable) (file-executable-p executable))
       (user-error "Google Test executable not found or not executable: %s" executable))
     (save-some-buffers (not compilation-ask-about-save)
                        (lambda ()
                          (projectile-project-buffer-p (current-buffer) root)))
     (with-current-buffer buffer
-      (when (and my-projectile-tests--current-batch
-                 (not (my-projectile-tests--batch-finished
-                       my-projectile-tests--current-batch)))
-        (user-error "A batch is already running in %s" (buffer-name buffer)))
+      (when my-projectile-tests--current-batch
+        (unless (my-projectile-tests--batch-finished my-projectile-tests--current-batch)
+          (user-error "A batch is already running in %s" (buffer-name buffer)))
+        (my-projectile-tests--discard my-projectile-tests--current-batch))
       (my-projectile-tests-mode)
       (setq my-projectile-tests--current-batch batch)
       (add-hook 'kill-buffer-hook #'my-projectile-tests--cancel nil t))
@@ -548,13 +611,11 @@ Press TAB or RET on a failed test to expand its rerun logs."
     (pop-to-buffer buffer)
     (setf (my-projectile-tests--batch-start-time batch) (current-time))
     (condition-case err
-        (my-projectile-tests--start-process batch 'listing)
+        (my-projectile-tests--start-runner batch runner)
       (error
-       (push (format "Could not start test discovery: %s"
-                     (my-projectile-tests--explain-process-error
-                      (error-message-string err)))
+       (push (format "Could not start emacs-test-runner: %s" (error-message-string err))
              (my-projectile-tests--batch-errors batch))
-       (my-projectile-tests--finish batch)))
+       (my-projectile-tests--finish batch t)))
     batch))
 
 (defun my-projectile-test-project-batch (&optional kind)
@@ -562,8 +623,8 @@ Press TAB or RET on a failed test to expand its rerun logs."
 Press s to exclude SLOW tests, t to choose the thread count, and f to
 include only test names containing a case-sensitive substring.  Press
 u or i to launch unit or integration tests.  Settings persist across
-Emacs sessions.  On Windows, high thread counts may exhaust Emacs
-process pipes; lower t and rerun if this happens.
+Emacs sessions.  Batches run through emacs-test-runner, which must be
+built first (see README.md).
 Failed cases are rerun with logging enabled; press TAB on a failure in
 the result buffer to inspect its logs.
 When called with KIND from Lisp, run that kind directly."
