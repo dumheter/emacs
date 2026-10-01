@@ -18,8 +18,7 @@
 ;;
 ;; Pause on a C or C++ type name for clangd hover (including size when available).
 ;; Use C-c l h to request the hover immediately.
-;; C and C++ buffers also highlight symbol references and show breadcrumbs and
-;; semantic token colors from clangd.
+;; C and C++ buffers also highlight symbol references and show breadcrumbs.
 ;;
 ;; ### Windows Config
 ;; #### Open files in same window
@@ -639,9 +638,7 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   "Enable C and C++ display modes once lsp-bridge is ready."
   (when (lsp-bridge-call-file-api-p)
     (unless lsp-bridge-breadcrumb-mode
-      (lsp-bridge-breadcrumb-mode 1))
-    (unless lsp-bridge-semantic-tokens-mode
-      (lsp-bridge-semantic-tokens-mode 1))))
+      (lsp-bridge-breadcrumb-mode 1))))
 
 (defun my-lsp-bridge-hover-at-point (buffer position)
   "Show hover in BUFFER if point is still at POSITION."
@@ -676,9 +673,7 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   "Remove C and C++ display modes when `lsp-bridge-mode' is disabled."
   (unless lsp-bridge-mode
     (when lsp-bridge-breadcrumb-mode
-      (lsp-bridge-breadcrumb-mode -1))
-    (when lsp-bridge-semantic-tokens-mode
-      (lsp-bridge-semantic-tokens-mode -1))))
+      (lsp-bridge-breadcrumb-mode -1))))
 
 (use-package lsp-bridge
   :load-path "~/lsp-bridge"
