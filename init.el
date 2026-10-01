@@ -44,6 +44,10 @@
 ;;
 ;; ### lsp-bridge doesnt work.
 ;; Search for `App Execution Aliases` and turn off python.
+;;
+;; ### Projectile tests
+;; C-c p c u runs unit tests; C-c p c n runs integration tests.
+;; Both prompt for a command, prefilled with the matching executable in TnT.
 
 (require 'package)
 (setq package-archives '(("melpa" . "https://melpa.org/packages/")
@@ -479,8 +483,57 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 
   :bind-keymap
   ("C-c p" . projectile-command-map)
-  :bind(("C-c r" . my-projectile-related-file))
+  :bind (("C-c r" . my-projectile-related-file)
+         :map projectile-command-map
+         ("c u" . my-projectile-test-project-unit)
+         ("c n" . my-projectile-test-project-integration))
   )
+
+(defvar my-projectile-test-project-unit-cmd-map (make-hash-table :test 'equal)
+  "Last unit test command used in each project compilation directory.")
+
+(defvar my-projectile-test-project-integration-cmd-map (make-hash-table :test 'equal)
+  "Last integration test command used in each project compilation directory.")
+
+(defun my-projectile-test-project--run (kind executable command-map arg)
+  "Run KIND tests with EXECUTABLE as the TnT default.
+COMMAND-MAP stores commands separately for each test kind.
+Prefix ARG forces a command prompt."
+  (let* ((root (projectile-acquire-root))
+         (directory (projectile-compilation-dir))
+         (command (or (gethash directory command-map)
+                      (when (string= (file-name-nondirectory
+                                      (directory-file-name root))
+                                     "TnT")
+                        (concat "Local\\Bin\\Win64-Dll\\release\\" executable
+                                " -disableLogs -disableCallstackResolution --gtest_filter=*")))))
+    (projectile--run-project-cmd command
+                                 (when (projectile--cache-project-commands-p)
+                                   command-map)
+                                 :command-type kind
+                                 :directory directory
+                                 :show-prompt (or arg (null command))
+                                 :prompt-prefix (format "%s test command: " (capitalize (symbol-name kind)))
+                                 :save-buffers t
+                                 :use-comint-mode (projectile-use-comint-mode-p 'test))))
+
+(defun my-projectile-test-project-unit (arg)
+  "Run unit tests for the current project.
+Prompt for the command, defaulting to the TnT unit test executable.
+With prefix ARG, force the command prompt."
+  (interactive "P")
+  (my-projectile-test-project--run
+   'unit "Extension.BattlefieldOnline.Runtime.Test_Win64_release_Dll.exe"
+   my-projectile-test-project-unit-cmd-map arg))
+
+(defun my-projectile-test-project-integration (arg)
+  "Run integration tests for the current project.
+Prompt for the command, defaulting to the TnT integration test executable.
+With prefix ARG, force the command prompt."
+  (interactive "P")
+  (my-projectile-test-project--run
+   'integration "Extension.BattlefieldOnline.Runtime.IntegrationTest_Win64_release_Dll.exe"
+   my-projectile-test-project-integration-cmd-map arg))
 
 (defun my-configure-markdown-buffer ()
   "Disable expensive features that make Markdown editing sluggish."
