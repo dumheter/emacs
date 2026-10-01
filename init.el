@@ -16,9 +16,9 @@
 ;;   "--completion-style=detailed",
 ;;   "--background-index=false"
 ;;
-;; Pause on a C++ struct name for clangd hover (including size when available).
+;; Pause on a C or C++ type name for clangd hover (including size when available).
 ;; Use C-c l h to request the hover immediately.
-;; C++ buffers also highlight symbol references and show breadcrumbs and
+;; C and C++ buffers also highlight symbol references and show breadcrumbs and
 ;; semantic token colors from clangd.
 ;;
 ;; ### Windows Config
@@ -633,10 +633,10 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   "Keymap for my custom lsp-bridge bindings.")
 
 (defvar-local my-lsp-bridge-hover-timer nil
-  "Idle timer for C++ symbol hover.")
+  "Idle timer for C and C++ symbol hover.")
 
-(defun my-lsp-bridge-activate-c++-display ()
-  "Enable C++ display modes once lsp-bridge is ready."
+(defun my-lsp-bridge-activate-c-family-display ()
+  "Enable C and C++ display modes once lsp-bridge is ready."
   (when (lsp-bridge-call-file-api-p)
     (unless lsp-bridge-breadcrumb-mode
       (lsp-bridge-breadcrumb-mode 1))
@@ -650,30 +650,30 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
       (setq my-lsp-bridge-hover-timer nil)
       (when (and (eq (window-buffer (selected-window)) buffer)
                  (bound-and-true-p lsp-bridge-mode))
-        (my-lsp-bridge-activate-c++-display)
+        (my-lsp-bridge-activate-c-family-display)
         (when (and (= (point) position)
                    (bounds-of-thing-at-point 'symbol))
           (lsp-bridge-popup-documentation))))))
 
 (defun my-lsp-bridge-schedule-hover ()
-  "Schedule symbol hover after a short pause in a C++ buffer."
+  "Schedule symbol hover after a short pause in a C or C++ buffer."
   (when my-lsp-bridge-hover-timer
     (cancel-timer my-lsp-bridge-hover-timer))
   (setq my-lsp-bridge-hover-timer
         (run-with-idle-timer 0.7 nil #'my-lsp-bridge-hover-at-point
                              (current-buffer) (point))))
 
-(defun my-lsp-bridge-enable-c++-features ()
-  "Enable C++ language-server display features in this buffer."
+(defun my-lsp-bridge-enable-c-family-features ()
+  "Enable C and C++ language-server display features in this buffer."
   (add-hook 'post-command-hook #'my-lsp-bridge-schedule-hover nil t)
-  (add-hook 'lsp-bridge-mode-hook #'my-lsp-bridge-cleanup-c++-display nil t)
+  (add-hook 'lsp-bridge-mode-hook #'my-lsp-bridge-cleanup-c-family-display nil t)
   (setq-local lsp-bridge-enable-document-highlight t)
   (when lsp-bridge-mode
     (lsp-bridge-enable-document-highlight-timer)
     (lsp-bridge-document-highlight-setup)))
 
-(defun my-lsp-bridge-cleanup-c++-display ()
-  "Remove C++ display modes when `lsp-bridge-mode' is disabled."
+(defun my-lsp-bridge-cleanup-c-family-display ()
+  "Remove C and C++ display modes when `lsp-bridge-mode' is disabled."
   (unless lsp-bridge-mode
     (when lsp-bridge-breadcrumb-mode
       (lsp-bridge-breadcrumb-mode -1))
@@ -686,8 +686,10 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   :bind
   (("M-." . my-lsp-bridge-find-def-with-xref)
    )
-  :hook ((c++-mode . my-lsp-bridge-enable-c++-features)
-         (c++-ts-mode . my-lsp-bridge-enable-c++-features))
+  :hook ((c-mode . my-lsp-bridge-enable-c-family-features)
+         (c++-mode . my-lsp-bridge-enable-c-family-features)
+         (c-ts-mode . my-lsp-bridge-enable-c-family-features)
+         (c++-ts-mode . my-lsp-bridge-enable-c-family-features))
   :init
   (define-key global-map (kbd "C-c l") my-lsp-bridge-keymap)
   (define-key my-lsp-bridge-keymap (kbd "q") #'lsp-bridge-restart-process)
