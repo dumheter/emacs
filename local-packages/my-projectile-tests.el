@@ -85,23 +85,65 @@ or u/i to run unit/integration tests with the displayed settings.")
   "Return the default number of parallel test threads."
   (max 1 (/ (1+ (num-processors)) 2)))
 
+(defun my-projectile-tests--insert-setting (key label value value-face)
+  "Insert a settings row with KEY, LABEL, VALUE and VALUE-FACE."
+  (insert "  " (propertize (format "[%s]" key)
+                          'face '(:inherit font-lock-keyword-face :weight bold))
+          "  " (format "%-29s" label)
+          (propertize value 'face value-face) "\n"))
+
 (defun my-projectile-tests--render-settings ()
   "Show the current batch settings in the settings buffer."
-  (let ((inhibit-read-only t))
+  (let* ((inhibit-read-only t)
+         (settings my-projectile-tests-batch-settings)
+         (exclude-slow (plist-get settings :exclude-slow))
+         (threads (plist-get settings :threads))
+         (filter (plist-get settings :filter))
+         (thread-count (or threads (my-projectile-tests--default-threads))))
     (erase-buffer)
-    (insert (format "Projectile batch tests: %s\n\n" my-projectile-tests--project-root)
-            (format "s  Exclude SLOW tests: %s\n"
-                    (if (plist-get my-projectile-tests-batch-settings :exclude-slow)
-                        "yes" "no"))
-            (format "t  Threads: %s\n"
-                    (or (plist-get my-projectile-tests-batch-settings :threads)
-                        (format "auto (%d)" (my-projectile-tests--default-threads))))
-            (format "f  Include tests containing: %s\n\n"
-                    (let ((filter (plist-get my-projectile-tests-batch-settings :filter)))
-                      (if (or (null filter) (string-empty-p filter)) "all" filter)))
-            "u  Run unit tests\n"
-            "i  Run integration tests\n\n"
-            "q  Close settings\n")
+    (insert "  "
+            (propertize "PROJECTILE  /  TEST RUNNER"
+                        'face '(:inherit font-lock-function-name-face
+                                         :height 1.5 :weight bold))
+            "\n  "
+            (propertize my-projectile-tests--project-root 'face 'shadow)
+            "\n\n  "
+            (propertize "SETTINGS" 'face '(:inherit font-lock-keyword-face
+                                                   :weight bold))
+            "\n")
+    (my-projectile-tests--insert-setting
+     "s" "Exclude SLOW tests:"
+     (if exclude-slow "ON" "OFF")
+     (if exclude-slow 'success 'shadow))
+    (my-projectile-tests--insert-setting
+     "t" "Threads:"
+     (if threads (number-to-string threads)
+       (format "auto (%d)" thread-count))
+     'font-lock-constant-face)
+    (my-projectile-tests--insert-setting
+     "f" "Include tests containing:"
+     (if (or (null filter) (string-empty-p filter)) "all" filter)
+     (if (or (null filter) (string-empty-p filter))
+         'shadow 'font-lock-string-face))
+    (insert "\n  "
+            (propertize "RUN" 'face '(:inherit font-lock-keyword-face
+                                              :weight bold))
+            "\n  "
+            (propertize "[u]  UNIT TESTS" 'face '(:inherit success :weight bold))
+            "        "
+            (propertize "[i]  INTEGRATION TESTS"
+                        'face '(:inherit success :weight bold))
+            "\n")
+    (when (and (eq system-type 'windows-nt) (> thread-count 16))
+      (insert "\n  "
+              (propertize "NOTE" 'face '(:inherit warning :weight bold))
+              "  "
+              (propertize "High thread counts can exhaust Emacs process pipes."
+                          'face 'warning)
+              "\n        Try 12-16 threads if you see \"Too many open files\".\n"))
+    (insert "\n  "
+            (propertize "[q]  Close settings" 'face 'shadow)
+            "\n")
     (goto-char (point-min))))
 
 (defun my-projectile-tests--toggle-slow ()
@@ -188,11 +230,18 @@ Press TAB or RET on a failed test to expand its rerun logs."
             ('skipped (cl-incf skipped))
             (_ (cl-incf unrun))))
         (erase-buffer)
-        (insert (format "%s tests: %d/%d passed"
-                        (capitalize (symbol-name (my-projectile-tests--batch-kind batch)))
-                        passed (length (my-projectile-tests--batch-tests batch))))
+        (insert (propertize (format "%s tests: "
+                                    (capitalize (symbol-name
+                                                 (my-projectile-tests--batch-kind batch))))
+                            'face '(:inherit font-lock-function-name-face
+                                             :weight bold))
+                (propertize (format "%d/%d passed"
+                                    passed (length (my-projectile-tests--batch-tests batch)))
+                            'face 'success))
         (when (my-projectile-tests--batch-tests batch)
-          (insert (format " (%d failed, %d skipped, %d not run)" failed skipped unrun)))
+          (insert (propertize (format " (%d failed, %d skipped, %d not run)"
+                                      failed skipped unrun)
+                              'face (if (or (> failed 0) (> unrun 0)) 'warning 'shadow))))
         (when final
           (insert (format " in %.2f seconds" (my-projectile-tests--batch-elapsed batch))))
         (insert "\n")
@@ -219,12 +268,13 @@ Press TAB or RET on a failed test to expand its rerun logs."
         (when (and final (my-projectile-tests--batch-tests batch))
           (dolist (test (my-projectile-tests--batch-tests batch))
             (when (eq (gethash test (my-projectile-tests--batch-results batch)) 'failed)
-              (insert (format "\n* FAILED: %s\n" test)
+              (insert (propertize (format "\n* FAILED: %s\n" test) 'face 'error)
                       (or (gethash test (my-projectile-tests--batch-logs batch))
                           "No rerun output was captured.\n")))))
         (when final
           (dolist (error-text (reverse (my-projectile-tests--batch-errors batch)))
-            (insert "\n* Batch error\n" error-text "\n")))
+            (insert (propertize "\n* Batch error\n" 'face 'error)
+                    error-text "\n")))
         (goto-char (point-min))
         (when final
           (outline-hide-body))))))
@@ -324,6 +374,12 @@ Press TAB or RET on a failed test to expand its rerun logs."
          (delete-file xml))
        (signal (car err) (cdr err))))))
 
+(defun my-projectile-tests--explain-process-error (text)
+  "Add recovery advice if TEXT reports exhausted Emacs process pipes."
+  (if (string-match-p "Creating pipe: Too many open files" text)
+      (concat text "\nEmacs ran out of process pipes. Lower the thread count (t) and rerun.")
+    text))
+
 (defun my-projectile-tests--start-reruns (batch)
   "Schedule failed BATCH tests, without exceeding its thread count."
   (while (and (my-projectile-tests--batch-rerun-queue batch)
@@ -335,10 +391,14 @@ Press TAB or RET on a failed test to expand its rerun logs."
             (my-projectile-tests--start-process batch 'rerun (list name))
             (cl-incf (my-projectile-tests--batch-active batch)))
         (error
-         (push (format "Could not rerun %s: %s" name (error-message-string err))
+         (push (format "Could not rerun %s: %s" name
+                       (my-projectile-tests--explain-process-error
+                        (error-message-string err)))
                (my-projectile-tests--batch-errors batch))
          (cl-incf (my-projectile-tests--batch-reruns-done batch))
-         (puthash name (format "Rerun could not start: %s\n" (error-message-string err))
+         (puthash name (format "Rerun could not start: %s\n"
+                               (my-projectile-tests--explain-process-error
+                                (error-message-string err)))
                   (my-projectile-tests--batch-logs batch))))))
   (when (and (null (my-projectile-tests--batch-rerun-queue batch))
              (zerop (my-projectile-tests--batch-active batch)))
@@ -353,8 +413,13 @@ Press TAB or RET on a failed test to expand its rerun logs."
     (error
      (dolist (name names)
        (puthash name 'not-run (my-projectile-tests--batch-results batch)))
-     (push (format "Thread result error: %s\n%s" (error-message-string err) output)
-           (my-projectile-tests--batch-errors batch))))
+     (let* ((pipe-exhausted (string-match-p "Creating pipe: Too many open files" output))
+            (description (format "Thread result error: %s\n%s"
+                                 (error-message-string err)
+                                 (my-projectile-tests--explain-process-error output))))
+       (unless (and pipe-exhausted
+                    (member description (my-projectile-tests--batch-errors batch)))
+         (push description (my-projectile-tests--batch-errors batch))))))
   (when (and (not (zerop exit-code))
              (cl-every (lambda (name)
                          (eq (gethash name (my-projectile-tests--batch-results batch))
@@ -485,7 +550,9 @@ Press TAB or RET on a failed test to expand its rerun logs."
     (condition-case err
         (my-projectile-tests--start-process batch 'listing)
       (error
-       (push (format "Could not start test discovery: %s" (error-message-string err))
+       (push (format "Could not start test discovery: %s"
+                     (my-projectile-tests--explain-process-error
+                      (error-message-string err)))
              (my-projectile-tests--batch-errors batch))
        (my-projectile-tests--finish batch)))
     batch))
@@ -495,7 +562,8 @@ Press TAB or RET on a failed test to expand its rerun logs."
 Press s to exclude SLOW tests, t to choose the thread count, and f to
 include only test names containing a case-sensitive substring.  Press
 u or i to launch unit or integration tests.  Settings persist across
-Emacs sessions.
+Emacs sessions.  On Windows, high thread counts may exhaust Emacs
+process pipes; lower t and rerun if this happens.
 Failed cases are rerun with logging enabled; press TAB on a failure in
 the result buffer to inspect its logs.
 When called with KIND from Lisp, run that kind directly."

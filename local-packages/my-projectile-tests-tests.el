@@ -17,7 +17,9 @@
       (my-projectile-tests-settings-mode)
       (setq my-projectile-tests--project-root "C:\\src\\TnT\\")
       (my-projectile-tests--render-settings)
-      (should (string-match-p "Threads: auto" (buffer-string)))
+      (should (string-match "PROJECTILE  /  TEST RUNNER" (buffer-string)))
+      (should (get-text-property (1+ (match-beginning 0)) 'face))
+      (should (string-match-p "Threads: *auto" (buffer-string)))
       (should (eq (lookup-key my-projectile-tests-settings-mode-map (kbd "u"))
                   #'my-projectile-tests--run-unit))
       (my-projectile-tests--toggle-slow)
@@ -28,10 +30,22 @@
         (my-projectile-tests--set-filter))
       (should (= (plist-get my-projectile-tests-batch-settings :threads) 3))
       (should (equal (plist-get my-projectile-tests-batch-settings :filter) "Fast"))
-      (should (string-match-p "Include tests containing: Fast" (buffer-string)))
+      (should (string-match-p "Include tests containing: *Fast" (buffer-string)))
+      (should (string-match-p "\\[u\\]  UNIT TESTS" (buffer-string)))
       (cl-letf (((symbol-function 'read-number) (lambda (&rest _) 0)))
         (should-error (my-projectile-tests--set-threads) :type 'user-error))
       (should (= (plist-get my-projectile-tests-batch-settings :threads) 3)))))
+
+(ert-deftest my-projectile-tests-warns-on-high-windows-thread-count ()
+  (let ((my-projectile-tests-batch-settings '(:threads 30)))
+    (with-temp-buffer
+      (my-projectile-tests-settings-mode)
+      (setq my-projectile-tests--project-root "C:\\src\\TnT\\")
+      (my-projectile-tests--render-settings)
+      (should (string-match-p "Threads: *30" (buffer-string)))
+      (when (eq system-type 'windows-nt)
+        (should (string-match-p "High thread counts can exhaust Emacs process pipes"
+                                (buffer-string)))))))
 
 (ert-deftest my-projectile-tests-select-tests ()
   (let ((batch (make-my-projectile-tests--batch :exclude-slow t :filter "Fast"))
@@ -69,6 +83,29 @@
                  (lambda (&rest _) nil)))
         (my-projectile-tests--start-threads batch '("a" "b")))
       (should (= (my-projectile-tests--batch-threads batch) 2)))))
+
+(ert-deftest my-projectile-tests-pipe-exhaustion-remains-visible ()
+  (with-temp-buffer
+    (my-projectile-tests-mode)
+    (let* ((names '("Suite.One" "Suite.Two" "Suite.Three"))
+           (batch (make-my-projectile-tests--batch
+                   :kind 'unit :buffer (current-buffer) :cpus 48
+                   :threads 3 :threads-done 0 :active 0
+                   :tests names :start-time (current-time)
+                   :results (make-hash-table :test 'equal)
+                   :logs (make-hash-table :test 'equal))))
+      (dolist (name names)
+        (my-projectile-tests--thread-finished
+         batch (list name) nil -1 "Creating pipe: Too many open files"))
+      (should (my-projectile-tests--batch-finished batch))
+      (should (= (length (my-projectile-tests--batch-errors batch)) 1))
+      (should (string-match-p "0/3 passed (0 failed, 0 skipped, 3 not run)"
+                              (buffer-string)))
+      (should (string-match-p "Lower the thread count (t)" (buffer-string)))
+      (should (= (cl-count ?* (buffer-string)) 1))
+      (dolist (name names)
+        (should (eq (gethash name (my-projectile-tests--batch-results batch))
+                    'not-run))))))
 
 (ert-deftest my-projectile-tests-launch-from-settings ()
   (let ((root "C:\\src\\TnT\\")
