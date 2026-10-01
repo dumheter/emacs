@@ -2,15 +2,16 @@
 
 ;;; Commentary:
 ;; Run unit or integration tests directly, or discover and run their Google
-;; Test cases in parallel.  The batch buffer summarizes results and folds
-;; each failed case's verbose rerun output under its own heading.  The final
-;; summary includes the total elapsed time.
+;; Test cases in parallel.  A settings buffer launches the batch and the
+;; result buffer folds each failed case's verbose rerun output under its own
+;; heading.  The final summary includes the total elapsed time.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'outline)
 (require 'projectile)
+(require 'subr-x)
 (require 'xml)
 
 (defconst my-projectile-tests--tnt-executables
@@ -22,6 +23,10 @@
 
 (defvar my-projectile-test-project-integration-cmd-map (make-hash-table :test 'equal)
   "Last integration test command used in each project compilation directory.")
+
+(defvar my-projectile-tests-batch-settings nil
+  "Saved batch settings: :exclude-slow, :threads and :filter.
+The thread count defaults to half the available logical CPUs.")
 
 (defun my-projectile-tests--tnt-p (root)
   "Return non-nil if ROOT is a TnT project root."
@@ -64,11 +69,86 @@ With prefix ARG, force the command prompt."
    'integration my-projectile-test-project-integration-cmd-map arg))
 
 (cl-defstruct my-projectile-tests--batch
-  kind root executable flags buffer cpus workers tests results logs
-  errors shards-done rerun-queue reruns-total reruns-done active processes
+  kind root executable flags buffer cpus thread-limit threads exclude-slow filter
+  tests results logs errors threads-done rerun-queue reruns-total reruns-done active processes
   start-time elapsed finished cancelled)
 
 (defvar-local my-projectile-tests--current-batch nil)
+(defvar-local my-projectile-tests--project-root nil)
+
+(define-derived-mode my-projectile-tests-settings-mode special-mode "Projectile Batch Settings"
+  "Major mode for choosing and launching parallel Google Test batches.
+Press s to exclude SLOW tests, t to set threads, f to set an include filter,
+or u/i to run unit/integration tests with the displayed settings.")
+
+(defun my-projectile-tests--default-threads ()
+  "Return the default number of parallel test threads."
+  (max 1 (/ (1+ (num-processors)) 2)))
+
+(defun my-projectile-tests--render-settings ()
+  "Show the current batch settings in the settings buffer."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (format "Projectile batch tests: %s\n\n" my-projectile-tests--project-root)
+            (format "s  Exclude SLOW tests: %s\n"
+                    (if (plist-get my-projectile-tests-batch-settings :exclude-slow)
+                        "yes" "no"))
+            (format "t  Threads: %s\n"
+                    (or (plist-get my-projectile-tests-batch-settings :threads)
+                        (format "auto (%d)" (my-projectile-tests--default-threads))))
+            (format "f  Include tests containing: %s\n\n"
+                    (let ((filter (plist-get my-projectile-tests-batch-settings :filter)))
+                      (if (or (null filter) (string-empty-p filter)) "all" filter)))
+            "u  Run unit tests\n"
+            "i  Run integration tests\n\n"
+            "q  Close settings\n")
+    (goto-char (point-min))))
+
+(defun my-projectile-tests--toggle-slow ()
+  "Toggle exclusion of tests whose suite or case starts with SLOW."
+  (interactive)
+  (setq my-projectile-tests-batch-settings
+        (plist-put my-projectile-tests-batch-settings :exclude-slow
+                   (not (plist-get my-projectile-tests-batch-settings :exclude-slow))))
+  (my-projectile-tests--render-settings))
+
+(defun my-projectile-tests--set-threads ()
+  "Set the number of threads used for a batch run."
+  (interactive)
+  (let ((threads (read-number "Test threads: "
+                              (or (plist-get my-projectile-tests-batch-settings :threads)
+                                  (my-projectile-tests--default-threads)))))
+    (unless (and (integerp threads) (> threads 0))
+      (user-error "Test threads must be a positive integer"))
+    (setq my-projectile-tests-batch-settings
+          (plist-put my-projectile-tests-batch-settings :threads threads))
+    (my-projectile-tests--render-settings)))
+
+(defun my-projectile-tests--set-filter ()
+  "Set a case-sensitive substring that test names must contain."
+  (interactive)
+  (setq my-projectile-tests-batch-settings
+        (plist-put my-projectile-tests-batch-settings :filter
+                   (read-string "Include tests containing (empty for all): "
+                                (plist-get my-projectile-tests-batch-settings :filter))))
+  (my-projectile-tests--render-settings))
+
+(defun my-projectile-tests--run-unit ()
+  "Run unit tests using the settings displayed in this buffer."
+  (interactive)
+  (my-projectile-tests--start-batch 'unit my-projectile-tests--project-root))
+
+(defun my-projectile-tests--run-integration ()
+  "Run integration tests using the settings displayed in this buffer."
+  (interactive)
+  (my-projectile-tests--start-batch 'integration my-projectile-tests--project-root))
+
+(define-key my-projectile-tests-settings-mode-map (kbd "s") #'my-projectile-tests--toggle-slow)
+(define-key my-projectile-tests-settings-mode-map (kbd "t") #'my-projectile-tests--set-threads)
+(define-key my-projectile-tests-settings-mode-map (kbd "f") #'my-projectile-tests--set-filter)
+(define-key my-projectile-tests-settings-mode-map (kbd "u") #'my-projectile-tests--run-unit)
+(define-key my-projectile-tests-settings-mode-map (kbd "i") #'my-projectile-tests--run-integration)
+(define-key my-projectile-tests-settings-mode-map (kbd "q") #'quit-window)
 
 (define-derived-mode my-projectile-tests-mode special-mode "Projectile Tests"
   "Major mode for parallel Google Test results.
@@ -117,23 +197,24 @@ Press TAB or RET on a failed test to expand its rerun logs."
           (insert (format " in %.2f seconds" (my-projectile-tests--batch-elapsed batch))))
         (insert "\n")
         (if final
-            (if (my-projectile-tests--batch-workers batch)
-                (insert (format "%d shards on %d logical CPUs (%d %s)\n"
-                                (my-projectile-tests--batch-workers batch)
-                                (my-projectile-tests--batch-cpus batch)
-                                (my-projectile-tests--batch-workers batch)
-                                (if (= (my-projectile-tests--batch-workers batch) 1)
-                                    "worker" "workers")))
-              (insert "No shards started\n"))
+            (if (my-projectile-tests--batch-threads batch)
+                (insert (format "%d %s on %d logical CPUs\n"
+                                (my-projectile-tests--batch-threads batch)
+                                (if (= (my-projectile-tests--batch-threads batch) 1)
+                                    "thread" "threads")
+                                (my-projectile-tests--batch-cpus batch)))
+              (insert (if (my-projectile-tests--batch-errors batch)
+                          "No threads started\n"
+                        "No tests matched the batch settings\n")))
           (insert (cond
                    ((my-projectile-tests--batch-reruns-total batch)
                     (format "Rerunning failures: %d/%d completed\n"
                             (my-projectile-tests--batch-reruns-done batch)
                             (my-projectile-tests--batch-reruns-total batch)))
                    ((my-projectile-tests--batch-tests batch)
-                    (format "Running shards: %d/%d completed\n"
-                            (my-projectile-tests--batch-shards-done batch)
-                            (my-projectile-tests--batch-workers batch)))
+                    (format "Running threads: %d/%d completed\n"
+                            (my-projectile-tests--batch-threads-done batch)
+                            (my-projectile-tests--batch-threads batch)))
                    (t "Discovering test cases...\n"))))
         (when (and final (my-projectile-tests--batch-tests batch))
           (dolist (test (my-projectile-tests--batch-tests batch))
@@ -175,6 +256,15 @@ Press TAB or RET on a failed test to expand its rerun logs."
             (push (concat suite test) tests))))))
     (delete-dups (nreverse tests))))
 
+(defun my-projectile-tests--select-tests (batch tests)
+  "Select discovered TESTS according to BATCH's saved settings."
+  (cl-remove-if-not
+   (lambda (test)
+     (and (or (not (my-projectile-tests--batch-exclude-slow batch))
+              (not (string-match-p "\\(?:\\`\\|[./]\\)SLOW" test)))
+          (string-search (my-projectile-tests--batch-filter batch) test)))
+   tests))
+
 (defun my-projectile-tests--read-xml (batch names path)
   "Record BATCH results for NAMES from Google Test XML at PATH."
   (let ((expected (make-hash-table :test 'equal))
@@ -203,9 +293,9 @@ Press TAB or RET on a failed test to expand its rerun logs."
         (puthash name 'not-run (my-projectile-tests--batch-results batch))))))
 
 (defun my-projectile-tests--start-process (batch stage &optional names)
-  "Start BATCH process for STAGE, running NAMES for a shard or rerun."
+  "Start BATCH process for STAGE, running NAMES for a thread or rerun."
   (let* ((output (generate-new-buffer " *projectile-tests-output*"))
-         (xml (when (eq stage 'shard) (make-temp-file "projectile-tests-" nil ".xml")))
+         (xml (when (eq stage 'thread) (make-temp-file "projectile-tests-" nil ".xml")))
          (default-directory (my-projectile-tests--batch-root batch))
          (args (append
                 (if (eq stage 'rerun)
@@ -213,7 +303,7 @@ Press TAB or RET on a failed test to expand its rerun logs."
                   (my-projectile-tests--batch-flags batch))
                 (pcase stage
                   ('listing '("--gtest_list_tests"))
-                  ('shard (list (concat "--gtest_filter=" (mapconcat #'identity names ":"))
+                  ('thread (list (concat "--gtest_filter=" (mapconcat #'identity names ":"))
                                 (concat "--gtest_output=xml:" xml)))
                   ('rerun (list (concat "--gtest_filter=" (car names))))))))
     (condition-case err
@@ -235,10 +325,10 @@ Press TAB or RET on a failed test to expand its rerun logs."
        (signal (car err) (cdr err))))))
 
 (defun my-projectile-tests--start-reruns (batch)
-  "Schedule failed BATCH tests, without exceeding its worker count."
+  "Schedule failed BATCH tests, without exceeding its thread count."
   (while (and (my-projectile-tests--batch-rerun-queue batch)
               (< (my-projectile-tests--batch-active batch)
-                 (my-projectile-tests--batch-workers batch)))
+                 (my-projectile-tests--batch-threads batch)))
     (let ((name (pop (my-projectile-tests--batch-rerun-queue batch))))
       (condition-case err
           (progn
@@ -254,28 +344,28 @@ Press TAB or RET on a failed test to expand its rerun logs."
              (zerop (my-projectile-tests--batch-active batch)))
     (my-projectile-tests--finish batch)))
 
-(defun my-projectile-tests--shard-finished (batch names xml exit-code output)
-  "Record a BATCH shard's NAMES from XML, EXIT-CODE and OUTPUT."
+(defun my-projectile-tests--thread-finished (batch names xml exit-code output)
+  "Record a BATCH thread's NAMES from XML, EXIT-CODE and OUTPUT."
   (condition-case err
       (if (and xml (file-exists-p xml))
           (my-projectile-tests--read-xml batch names xml)
-        (error "Shard produced no Google Test XML"))
+        (error "Thread produced no Google Test XML"))
     (error
      (dolist (name names)
        (puthash name 'not-run (my-projectile-tests--batch-results batch)))
-     (push (format "Shard result error: %s\n%s" (error-message-string err) output)
+     (push (format "Thread result error: %s\n%s" (error-message-string err) output)
            (my-projectile-tests--batch-errors batch))))
   (when (and (not (zerop exit-code))
              (cl-every (lambda (name)
                          (eq (gethash name (my-projectile-tests--batch-results batch))
                              'passed))
                        names))
-    (push (format "Shard exited with status %d without reported failures:\n%s"
+    (push (format "Thread exited with status %d without reported failures:\n%s"
                   exit-code output)
           (my-projectile-tests--batch-errors batch)))
-  (cl-incf (my-projectile-tests--batch-shards-done batch))
-  (if (= (my-projectile-tests--batch-shards-done batch)
-         (my-projectile-tests--batch-workers batch))
+  (cl-incf (my-projectile-tests--batch-threads-done batch))
+  (if (= (my-projectile-tests--batch-threads-done batch)
+         (my-projectile-tests--batch-threads batch))
       (progn
         (setf (my-projectile-tests--batch-rerun-queue batch)
               (cl-remove-if-not
@@ -290,20 +380,20 @@ Press TAB or RET on a failed test to expand its rerun logs."
     (unless (my-projectile-tests--batch-finished batch)
       (my-projectile-tests--render batch))))
 
-(defun my-projectile-tests--start-shards (batch tests)
-  "Partition TESTS into BATCH's workers and start each shard."
-  (let* ((workers (min (length tests) (max 1 (/ (1+ (my-projectile-tests--batch-cpus batch)) 2))))
-         (shards (make-vector workers nil)))
+(defun my-projectile-tests--start-threads (batch tests)
+  "Partition TESTS into BATCH's threads and start each one."
+  (let* ((threads (min (length tests) (my-projectile-tests--batch-thread-limit batch)))
+         (groups (make-vector threads nil)))
     (setf (my-projectile-tests--batch-tests batch) tests
-          (my-projectile-tests--batch-workers batch) workers)
+          (my-projectile-tests--batch-threads batch) threads)
     (cl-loop for test in tests for index from 0
-             do (push test (aref shards (mod index workers))))
-    (dotimes (index workers)
-      (let ((names (nreverse (aref shards index))))
+             do (push test (aref groups (mod index threads))))
+    (dotimes (index threads)
+      (let ((names (nreverse (aref groups index))))
         (condition-case err
-            (my-projectile-tests--start-process batch 'shard names)
+            (my-projectile-tests--start-process batch 'thread names)
           (error
-           (my-projectile-tests--shard-finished
+           (my-projectile-tests--thread-finished
             batch names nil -1 (error-message-string err))))))
     (unless (my-projectile-tests--batch-finished batch)
       (my-projectile-tests--render batch))))
@@ -326,13 +416,16 @@ Press TAB or RET on a failed test to expand its rerun logs."
               ('listing
                (let ((tests (and (zerop code) (my-projectile-tests--parse-list output))))
                  (if tests
-                     (my-projectile-tests--start-shards batch tests)
+                     (let ((selected (my-projectile-tests--select-tests batch tests)))
+                       (if selected
+                           (my-projectile-tests--start-threads batch selected)
+                         (my-projectile-tests--finish batch)))
                    (push (format "Could not list Google Test cases (exit %d):\n%s"
                                  code output)
                          (my-projectile-tests--batch-errors batch))
                    (my-projectile-tests--finish batch))))
-              ('shard
-               (my-projectile-tests--shard-finished batch names xml code output))
+              ('thread
+               (my-projectile-tests--thread-finished batch names xml code output))
               ('rerun
                (puthash (car names)
                         (format "Rerun exit status: %d\n\n%s" code output)
@@ -347,20 +440,13 @@ Press TAB or RET on a failed test to expand its rerun logs."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(defun my-projectile-test-project-batch (&optional kind)
-  "Discover and run KIND's Google Test cases in parallel.
-Interactively select unit or integration tests.  Half of the available
-logical CPUs run disjoint shards.  Failed cases are rerun with logging
-enabled; press TAB on a failure in the result buffer to inspect its logs.
-The final summary reports total elapsed time in seconds."
-  (interactive)
-  (let* ((kind (let ((selection
-                      (or kind (intern (completing-read "Batch tests (unit/integration): "
-                                                       '("unit" "integration") nil t)))))
-                  (unless (memq selection '(unit integration))
-                    (user-error "Test kind must be unit or integration"))
-                  selection))
-         (root (projectile-acquire-root))
+(defun my-projectile-tests--start-batch (kind root)
+  "Discover and run KIND's Google Test cases in parallel from ROOT."
+  (unless (memq kind '(unit integration))
+    (user-error "Test kind must be unit or integration"))
+  (unless root
+    (user-error "No project selected for batch tests"))
+  (let* ((settings my-projectile-tests-batch-settings)
          (tnt (my-projectile-tests--tnt-p root))
          (executable (if tnt
                          (expand-file-name
@@ -373,9 +459,13 @@ The final summary reports total elapsed time in seconds."
                  :kind kind :root root :executable executable
                  :flags (when tnt '("-disableLogs" "-disableCallstackResolution"))
                  :buffer buffer :cpus (num-processors)
+                 :thread-limit (or (plist-get settings :threads)
+                                   (my-projectile-tests--default-threads))
+                 :exclude-slow (plist-get settings :exclude-slow)
+                 :filter (or (plist-get settings :filter) "")
                  :results (make-hash-table :test 'equal)
                  :logs (make-hash-table :test 'equal)
-                 :shards-done 0 :active 0)))
+                 :threads-done 0 :active 0)))
     (unless (and (file-regular-p executable) (file-executable-p executable))
       (user-error "Google Test executable not found or not executable: %s" executable))
     (save-some-buffers (not compilation-ask-about-save)
@@ -390,7 +480,7 @@ The final summary reports total elapsed time in seconds."
       (setq my-projectile-tests--current-batch batch)
       (add-hook 'kill-buffer-hook #'my-projectile-tests--cancel nil t))
     (my-projectile-tests--render batch)
-    (display-buffer buffer)
+    (pop-to-buffer buffer)
     (setf (my-projectile-tests--batch-start-time batch) (current-time))
     (condition-case err
         (my-projectile-tests--start-process batch 'listing)
@@ -399,6 +489,28 @@ The final summary reports total elapsed time in seconds."
              (my-projectile-tests--batch-errors batch))
        (my-projectile-tests--finish batch)))
     batch))
+
+(defun my-projectile-test-project-batch (&optional kind)
+  "Open batch settings for the current project.
+Press s to exclude SLOW tests, t to choose the thread count, and f to
+include only test names containing a case-sensitive substring.  Press
+u or i to launch unit or integration tests.  Settings persist across
+Emacs sessions.
+Failed cases are rerun with logging enabled; press TAB on a failure in
+the result buffer to inspect its logs.
+When called with KIND from Lisp, run that kind directly."
+  (interactive)
+  (let ((root (projectile-acquire-root)))
+    (if kind
+        (my-projectile-tests--start-batch kind root)
+      (let ((buffer (get-buffer-create
+                     (format "*Projectile batch settings: %s*"
+                             (file-name-nondirectory (directory-file-name root))))))
+        (with-current-buffer buffer
+          (my-projectile-tests-settings-mode)
+          (setq my-projectile-tests--project-root root)
+          (my-projectile-tests--render-settings))
+        (pop-to-buffer buffer)))))
 
 (provide 'my-projectile-tests)
 ;;; my-projectile-tests.el ends here

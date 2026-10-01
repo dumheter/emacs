@@ -332,6 +332,8 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 (use-package savehist
   :ensure nil
   :init
+  (require 'savehist)
+  (add-to-list 'savehist-additional-variables 'my-projectile-tests-batch-settings)
   (savehist-mode)
   )
 
