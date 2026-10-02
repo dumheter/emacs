@@ -72,8 +72,8 @@ Check the result with `emacs-test-runner/build/emacs-test-runner --version`.
 Rebuild after pulling changes to `emacs-test-runner/`; Emacs reports a
 protocol mismatch if the build is outdated.
 
-With Python 3 available, check cache refresh, runs without cache, filtering and
-multi-process scheduling on Windows:
+With Python 3 available, check cache refresh, runs without cache, filtering,
+repeats and multi-process scheduling on Windows:
 
 ```powershell
 python emacs-test-runner\tests.py emacs-test-runner\build\emacs-test-runner.exe
@@ -120,12 +120,28 @@ breadcrumbs.
 - `C-c p c b` opens the batch settings: `s` excludes SLOW tests, `t` sets the
   thread count (default: half the logical CPUs), `f` sets a name filter, `d`
   toggles discovery mode, `r` toggles **Run without cache**, `l`/`c` toggle
-  `disableLogs`/`disableCallstackResolution`, and `u`/`i` run
+  `disableLogs`/`disableCallstackResolution`, `g` sets **Google Test repeat**,
+  `p` sets **Parallel repeat**, and `u`/`i` run
   unit/integration tests. Both disable flags default to enabled, apply only
   to TnT batches, and are saved across Emacs sessions with the other settings.
-  Outside TnT it prompts for the Google Test executable. Failed tests are rerun with
-  logging; press `TAB` on a failure to expand its log. Killing the result
+  Outside TnT it prompts for the Google Test executable. Failed tests are
+  rerun with logging; press `TAB` on a failure to expand its log. Killing the result
   buffer stops the batch.
+- **Google Test repeat** passes `--gtest_repeat=N` to each test process and
+  diagnostic rerun, repeating its selected cases sequentially inside that
+  process. **Parallel repeat** schedules N independent iterations of every
+  matching test across the worker threads. Both default to 1, accept integers
+  from 1 to 1,000,000, and persist with the other settings; infinite native
+  repeats (`-1`) are not supported. The counts multiply: setting Google Test
+  repeat to 5 and parallel repeat to 20 runs each selected case 100 times.
+  To stress one case across threads, narrow the name filter to that case and
+  increase parallel repeat.
+- Each parallel iteration has its own result entry and original failure log.
+  Later passes and diagnostic reruns never replace a failed iteration's result.
+  Google Test XML covers only the final native repeat; if a repeated process
+  exits unsuccessfully despite passing final XML, its affected cases are
+  marked **FAILED PROCESS** instead of reported as passing. The original log
+  remains available alongside the diagnostic rerun.
 - Listing the tests is slow, so batches normally reuse the cached test list
   and split the tests using their recorded durations. Every run refreshes the
   durations and process overhead, so balancing adapts without rediscovery.
@@ -163,11 +179,19 @@ needs a single pipe to Emacs instead:
   queue starts the longest estimated chunks first. The estimate models that
   queue, including startup overhead for every chunk, rather than assuming
   workers stay assigned to their original groups.
+- Parallel repeats copy the planned chunks into independent iteration jobs
+  in the shared queue, so even a single selected case can occupy multiple
+  workers. Each iteration uses distinct XML and log files. Native repeats
+  run inside each process and do not apply to test discovery.
 - On every run with a cache, it reads each test's `time` from the Google Test
   XML. It also measures the per-process overhead (process wall time minus
   test time) and saves the list and durations to the cache after the run.
   Durations of tests that did not run this time are kept from the previous
   cache. Cached runs do not list the tests again.
+  With native repeats, only the final iteration's XML timings are available:
+  those refresh the per-test durations, but the cached process overhead is
+  preserved rather than counting earlier iterations as startup overhead.
+  Estimates account for both repeat counts.
 - Each worker runs one test process at a time with its output redirected to a
   file in a temporary directory created by Emacs (`emacs-test-runner-*` under
   `TEMP`). Emacs reads the Google Test XML and logs from there and deletes the
@@ -181,7 +205,7 @@ needs a single pipe to Emacs instead:
 
 Emacs writes commands to the runner's stdin and reads events from its stdout.
 Both are UTF-8 lines of tab-separated fields, so fields cannot contain tabs or
-line breaks. Protocol version: 3.
+line breaks. Protocol version: 4.
 
 Commands:
 
@@ -193,6 +217,8 @@ Commands:
 | `arg ARG` | Argument for discovery and test runs; repeatable. |
 | `rerun-arg ARG` | Argument for reruns; repeatable. |
 | `threads N` | Parallel test processes, 1-1024 (default 1). |
+| `gtest-repeat N` | Sequential `--gtest_repeat=N` within each test process and diagnostic rerun, 1-1000000 (default 1); not used for discovery. |
+| `repeat N` | Independent parallel iterations of each selected test, 1-1000000 (default 1). |
 | `filter TEXT` | Run only tests whose full name contains `TEXT`. |
 | `exclude-slow` | Skip tests with `SLOW` at the start of the suite, the case or a `/` segment. |
 | `cache PATH` | Timing cache file. Without `rediscover`, a readable cache replaces discovery. Omit to always discover, schedule round-robin and disable timing recording and cache reads/writes. |
@@ -207,10 +233,10 @@ Events:
 | Event | Meaning |
 | --- | --- |
 | `hello emacs-test-runner VERSION` | Sent at startup. |
-| `test NAME` | One per selected test, before `discovered`. |
-| `discovered TOTAL SELECTED THREADS SOURCE ESTIMATE` | Tests are known; `THREADS` processes will run in parallel. `SOURCE` is `listed` or `cache`; `ESTIMATE` is the expected run time in milliseconds, or 0 without timings. |
-| `chunk-done EXIT XML LOG NAME...` | A test process for `NAME...` exited. |
-| `chunk-failed MESSAGE NAME...` | A test process could not start. |
+| `test NAME ITERATION` | One per selected test and parallel iteration (1-based), before `discovered`. |
+| `discovered TOTAL SELECTED THREADS SOURCE ESTIMATE` | Tests are known; `TOTAL` is the unique discovered case count and `SELECTED` includes parallel iterations. `THREADS` processes will run in parallel. `SOURCE` is `listed` or `cache`; `ESTIMATE` is the expected run time in milliseconds, or 0 without timings. |
+| `chunk-done ITERATION EXIT XML LOG NAME...` | A test process for `NAME...` in parallel `ITERATION` exited. |
+| `chunk-failed ITERATION MESSAGE NAME...` | A test process in parallel `ITERATION` could not start. |
 | `cache-saved TIMED TOTAL` | Saved the cache, with durations for `TIMED` of `TOTAL` tests. Sent before `run-finished` on both discovery and cached runs. |
 | `cache-failed MESSAGE` | The cache was invalid (and is rebuilt) or could not be written. The batch continues. |
 | `run-finished` | All selected tests have been reported. |

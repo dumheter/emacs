@@ -34,6 +34,7 @@
 #endif
 #endif
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -41,9 +42,10 @@
 #include <string.h>
 
 #define RUNNER_NAME "emacs-test-runner"
-#define RUNNER_VERSION "1.2"
-#define PROTOCOL_VERSION "3"
+#define RUNNER_VERSION "1.3"
+#define PROTOCOL_VERSION "4"
 #define MAX_THREADS 1024u
+#define MAX_REPEAT 1000000u
 
 #if defined(_WIN32)
 #define PATH_SEP "\\"
@@ -868,6 +870,8 @@ static struct {
   strvec args;
   strvec rerun_args;
   unsigned threads;
+  unsigned repeat;
+  unsigned gtest_repeat;
   int exclude_slow;
   int rediscover;
 } config;
@@ -879,6 +883,7 @@ typedef enum { JOB_DISCOVER, JOB_CHUNK, JOB_RERUN } job_kind;
 typedef struct job {
   job_kind kind;
   unsigned id;
+  unsigned iteration;
   char *rerun_id;
   char **names; /* Borrowed from selected_tests, except for reruns. */
   size_t name_count;
@@ -935,6 +940,13 @@ static void base_argv(strvec *argv, const strvec *args)
   sv_push(argv, xstrdup(config.exe));
   for (size_t i = 0; i < args->count; ++i)
     sv_push(argv, xstrdup(args->items[i]));
+}
+
+static void add_gtest_repeat(strvec *argv)
+{
+  strbuf flag = { 0 };
+  sb_addf(&flag, "--gtest_repeat=%u", config.gtest_repeat);
+  sv_push(argv, flag.data);
 }
 
 /* Discovery output parsing, matching `--gtest_list_tests'. */
@@ -1384,7 +1396,8 @@ static void record_chunk_timings(const job *chunk, const char *xml_path,
     return;
   mutex_lock(&timing.lock);
   found = record_xml_durations(xml, &total);
-  if (found == chunk->name_count) {
+  /* Google Test XML contains only the final native repeat's timings. */
+  if (found == chunk->name_count && config.gtest_repeat == 1) {
     timing.overhead_sum += elapsed_us > total ? elapsed_us - total : 0;
     ++timing.overhead_samples;
   }
@@ -1436,6 +1449,11 @@ typedef struct {
   size_t test;
 } weighted_test;
 
+static uint64_t add_duration(uint64_t left, uint64_t right)
+{
+  return left > UINT64_MAX - right ? UINT64_MAX : left + right;
+}
+
 static int compare_weighted(const void *a, const void *b)
 {
   const weighted_test *x = a, *y = b;
@@ -1451,7 +1469,12 @@ static int compare_jobs(const void *a, const void *b)
 
   if (x->expected_us != y->expected_us)
     return x->expected_us > y->expected_us ? -1 : 1;
-  return strcmp(x->names[0], y->names[0]);
+  {
+    int names = strcmp(x->names[0], y->names[0]);
+    if (names)
+      return names;
+  }
+  return x->iteration < y->iteration ? -1 : x->iteration > y->iteration;
 }
 
 /* Assign every selected test to one of THREADS groups in GROUP_OF and store
@@ -1483,9 +1506,10 @@ static int assign_groups(unsigned threads, size_t capacity, unsigned *group_of,
   guess = known_sum / known;
   order = xmalloc(count * sizeof *order);
   for (size_t i = 0; i < count; ++i) {
-    expected[i] = selected_durations[i] != DURATION_UNKNOWN ? selected_durations[i] : guess;
-    order[i].cost = expected[i]
-                    + timing.overhead_us * (strlen(selected_tests.items[i]) + 1) / capacity;
+    expected[i] = (selected_durations[i] != DURATION_UNKNOWN
+                   ? selected_durations[i] : guess) * config.gtest_repeat;
+    order[i].cost = add_duration(
+      expected[i], timing.overhead_us * (strlen(selected_tests.items[i]) + 1) / capacity);
     order[i].test = i;
   }
   qsort(order, count, sizeof *order, compare_weighted);
@@ -1500,7 +1524,7 @@ static int assign_groups(unsigned threads, size_t capacity, unsigned *group_of,
       if (loads[g] < loads[best] || (loads[g] == loads[best] && sizes[g] < sizes[best]))
         best = g;
     group_of[order[k].test] = best;
-    loads[best] += order[k].cost;
+    loads[best] = add_duration(loads[best], order[k].cost);
     ++sizes[best];
   }
   free(order);
@@ -1517,7 +1541,7 @@ static void plan_chunks(unsigned threads, chunk_plan *plan)
 {
   size_t count = selected_tests.count, rounds = 0;
   size_t base = strlen(config.exe) + 3 + strlen("--gtest_filter=") + 3
-                + strlen("--gtest_output=xml:") + strlen(config.outdir) + 48;
+                + strlen("--gtest_output=xml:") + strlen(config.outdir) + 80;
   size_t capacity;
   unsigned *group_of = xmalloc(count * sizeof *group_of);
   uint64_t *expected = xmalloc(count * sizeof *expected);
@@ -1561,9 +1585,10 @@ static void plan_chunks(unsigned threads, chunk_plan *plan)
       if (i == end || (i > from && base + length + add > COMMAND_LINE_LIMIT)) {
         if (i > from) {
           job *chunk = new_job(JOB_CHUNK);
+          chunk->iteration = 1;
           chunk->names = names + from;
           chunk->name_count = i - from;
-          chunk->expected_us = duration + timing.overhead_us;
+          chunk->expected_us = add_duration(duration, timing.overhead_us);
           chunks[g] = xrealloc(chunks[g], (chunk_counts[g] + 1) * sizeof *chunks[g]);
           chunks[g][chunk_counts[g]++] = chunk;
           ++plan->count;
@@ -1574,7 +1599,7 @@ static void plan_chunks(unsigned threads, chunk_plan *plan)
       }
       length += add;
       if (i < end)
-        duration += durations[i];
+        duration = add_duration(duration, durations[i]);
     }
     if (chunk_counts[g] > rounds)
       rounds = chunk_counts[g];
@@ -1587,6 +1612,22 @@ static void plan_chunks(unsigned threads, chunk_plan *plan)
       if (r < chunk_counts[g])
         plan->jobs[plan->count++] = chunks[g][r];
 
+  {
+    size_t original_count = plan->count;
+    plan->jobs = xrealloc(plan->jobs,
+                         original_count * config.repeat * sizeof *plan->jobs);
+    for (unsigned iteration = 2; iteration <= config.repeat; ++iteration)
+      for (size_t i = 0; i < original_count; ++i) {
+        job *original = plan->jobs[i];
+        job *copy = new_job(JOB_CHUNK);
+        copy->names = original->names;
+        copy->name_count = original->name_count;
+        copy->expected_us = original->expected_us;
+        copy->iteration = iteration;
+        plan->jobs[plan->count++] = copy;
+      }
+  }
+
   if (timed) {
     qsort(plan->jobs, plan->count, sizeof *plan->jobs, compare_jobs);
     memset(loads, 0, threads * sizeof *loads);
@@ -1595,7 +1636,7 @@ static void plan_chunks(unsigned threads, chunk_plan *plan)
       for (unsigned g = 1; g < threads; ++g)
         if (loads[g] < loads[best])
           best = g;
-      loads[best] += plan->jobs[i]->expected_us;
+      loads[best] = add_duration(loads[best], plan->jobs[i]->expected_us);
       if (loads[best] > plan->estimate_us)
         plan->estimate_us = loads[best];
     }
@@ -1726,6 +1767,7 @@ static void run_discovery(void)
   strbuf line = { 0 };
   chunk_plan plan = { 0 };
   unsigned workers;
+  size_t iterations;
 
   if (!source)
     return;
@@ -1738,17 +1780,26 @@ static void run_discovery(void)
     if (is_selected(all_tests.items[i])) {
       selected_durations[selected_tests.count] = timing.durations[i];
       sv_push(&selected_tests, all_tests.items[i]);
-      sb_add(&line, "test");
-      sb_add_field(&line, all_tests.items[i]);
-      emit(&line);
     }
   }
-  workers = selected_tests.count < config.threads ? (unsigned)selected_tests.count
-                                                  : config.threads;
+  if (selected_tests.count > (SIZE_MAX / sizeof(job *)) / config.repeat
+      || selected_tests.count > (UINT_MAX - 1u) / config.repeat) {
+    emit_error("Too many parallel test iterations");
+    return;
+  }
+  iterations = selected_tests.count * config.repeat;
+  for (unsigned iteration = 1; iteration <= config.repeat; ++iteration)
+    for (size_t i = 0; i < selected_tests.count; ++i) {
+      sb_add(&line, "test");
+      sb_add_field(&line, selected_tests.items[i]);
+      sb_addf(&line, "\t%u", iteration);
+      emit(&line);
+    }
+  workers = iterations < config.threads ? (unsigned)iterations : config.threads;
   if (workers > 0)
     plan_chunks(workers, &plan);
   sb_addf(&line, "discovered\t%lu\t%lu\t%u\t%s\t%llu", (unsigned long)all_tests.count,
-          (unsigned long)selected_tests.count, workers, source,
+          (unsigned long)iterations, workers, source,
           (unsigned long long)(plan.estimate_us / 1000u));
   emit(&line);
   if (workers == 0)
@@ -1768,6 +1819,7 @@ static void run_chunk(const job *chunk)
   int last;
 
   base_argv(&argv, &config.args);
+  add_gtest_repeat(&argv);
   sb_add(&filter, "--gtest_filter=");
   for (size_t i = 0; i < chunk->name_count; ++i) {
     if (i)
@@ -1785,11 +1837,11 @@ static void run_chunk(const job *chunk)
     record_chunk_timings(chunk, xml, result.elapsed_us);
 
   if (result.started) {
-    sb_addf(&line, "chunk-done\t%lu", result.exit_code);
+    sb_addf(&line, "chunk-done\t%u\t%lu", chunk->iteration, result.exit_code);
     sb_add_field(&line, xml);
     sb_add_field(&line, log);
   } else {
-    sb_add(&line, "chunk-failed");
+    sb_addf(&line, "chunk-failed\t%u", chunk->iteration);
     sb_add_field(&line, result.message);
   }
   for (size_t i = 0; i < chunk->name_count; ++i)
@@ -1814,6 +1866,7 @@ static void run_rerun(const job *rerun)
   proc_result result;
 
   base_argv(&argv, &config.rerun_args);
+  add_gtest_repeat(&argv);
   sb_add(&line, "--gtest_filter=");
   sb_add(&line, rerun->names[0]);
   sv_push(&argv, xstrdup(line.data));
@@ -1949,6 +2002,8 @@ static void handle_command(char **fields, size_t count)
                     || strcmp(command, "outdir") == 0 || strcmp(command, "arg") == 0
                     || strcmp(command, "rerun-arg") == 0 || strcmp(command, "threads") == 0
                     || strcmp(command, "filter") == 0
+                    || strcmp(command, "repeat") == 0
+                    || strcmp(command, "gtest-repeat") == 0
                     || strcmp(command, "exclude-slow") == 0
                     || strcmp(command, "cache") == 0
                     || strcmp(command, "rediscover") == 0;
@@ -1977,15 +2032,25 @@ static void handle_command(char **fields, size_t count)
       sv_push(&config.args, xstrdup(value));
     } else if (strcmp(command, "rerun-arg") == 0) {
       sv_push(&config.rerun_args, xstrdup(value));
-    } else {
+    } else if (strcmp(command, "threads") == 0 || strcmp(command, "repeat") == 0
+               || strcmp(command, "gtest-repeat") == 0) {
       char *end;
-      unsigned long threads = strtoul(value, &end, 10);
-      if (*value && !*end && threads >= 1 && threads <= MAX_THREADS) {
-        config.threads = (unsigned)threads;
+      unsigned long number = strtoul(value, &end, 10);
+      unsigned limit = strcmp(command, "threads") == 0 ? MAX_THREADS : MAX_REPEAT;
+      if (*value >= '0' && *value <= '9' && !*end && number >= 1 && number <= limit) {
+        if (strcmp(command, "threads") == 0)
+          config.threads = (unsigned)number;
+        else if (strcmp(command, "repeat") == 0)
+          config.repeat = (unsigned)number;
+        else
+          config.gtest_repeat = (unsigned)number;
       } else {
-        sb_addf(&message, "threads must be between 1 and %u", MAX_THREADS);
+        sb_addf(&message, "%s must be between 1 and %u", command, limit);
         emit_error(message.data);
       }
+    } else {
+      sb_addf(&message, "invalid command: %s with 1 argument", command);
+      emit_error(message.data);
     }
   } else if (strcmp(command, "run") == 0 && count == 1) {
     start_run();
@@ -2069,6 +2134,8 @@ int main(int argc, char **argv)
   cond_init(&queue.changed);
   mutex_init(&timing.lock);
   config.threads = 1;
+  config.repeat = 1;
+  config.gtest_repeat = 1;
 
   sb_add(&line, "hello\t" RUNNER_NAME "\t" PROTOCOL_VERSION);
   emit(&line);

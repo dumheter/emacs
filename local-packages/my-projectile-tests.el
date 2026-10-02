@@ -39,9 +39,10 @@
 
 (defvar my-projectile-tests-batch-settings nil
   "Saved batch settings: :exclude-slow, :threads, :filter, :discover, :fresh,
-:disable-logs and :disable-callstack-resolution.
+:disable-logs, :disable-callstack-resolution, :gtest-repeat and :repeat.
 The thread count defaults to half the available logical CPUs.
-Both TnT disable flags default to enabled when their settings are absent.")
+Both TnT disable flags default to enabled when their settings are absent.
+Both repeat counts default to 1.")
 
 (defvar my-projectile-tests-cache-directory
   (locate-user-emacs-file ".cache/emacs-test-runner/")
@@ -54,11 +55,14 @@ Both TnT disable flags default to enabled when their settings are absent.")
   "The emacs-test-runner executable used for batch tests.
 Build it as described in README.md.")
 
-(defconst my-projectile-tests--runner-protocol "3"
+(defconst my-projectile-tests--runner-protocol "4"
   "Protocol version this library expects from emacs-test-runner.")
 
 (defconst my-projectile-tests--max-threads 1024
   "Largest thread count emacs-test-runner accepts.")
+
+(defconst my-projectile-tests--max-repeat 1000000
+  "Largest repeat count emacs-test-runner accepts.")
 
 (defconst my-projectile-tests--log-excerpt-size 20000
   "Number of trailing log characters shown for a batch error.")
@@ -118,7 +122,8 @@ With prefix ARG, force the command prompt."
   kind root executable flags buffer cpus thread-limit threads exclude-slow filter
   discover cache source cache-time estimate timed
   process pending outdir discovering tests results logs errors tests-done
-  rerun-names reruns-total reruns-done start-time elapsed finished cancelled)
+  rerun-names reruns-total reruns-done start-time elapsed finished cancelled
+  gtest-repeat repeat test-names)
 
 (defvar-local my-projectile-tests--current-batch nil)
 (defvar-local my-projectile-tests--project-root nil)
@@ -128,7 +133,9 @@ With prefix ARG, force the command prompt."
 Press s to exclude SLOW tests, t to set threads, f to set an include filter,
 d to toggle discovery mode, r to toggle runs without cache, l/c to toggle
 TnT's disableLogs/disableCallstackResolution flags, or u/i to run
-unit/integration tests with the displayed settings.")
+unit/integration tests with the displayed settings.
+Press g to set --gtest_repeat within each process, or p to set independent
+parallel repeats of each selected test.")
 
 (defun my-projectile-tests--setting (key &optional default)
   "Return saved batch setting KEY, or DEFAULT if KEY has no saved value."
@@ -159,6 +166,8 @@ unit/integration tests with the displayed settings.")
          (disable-logs (my-projectile-tests--setting :disable-logs t))
          (disable-callstack-resolution
           (my-projectile-tests--setting :disable-callstack-resolution t))
+         (gtest-repeat (my-projectile-tests--setting :gtest-repeat 1))
+         (repeat (my-projectile-tests--setting :repeat 1))
          (thread-count (or threads (my-projectile-tests--default-threads))))
     (erase-buffer)
     (insert "  "
@@ -185,6 +194,14 @@ unit/integration tests with the displayed settings.")
      (if (or (null filter) (string-empty-p filter)) "all" filter)
      (if (or (null filter) (string-empty-p filter))
          'shadow 'font-lock-string-face))
+    (my-projectile-tests--insert-setting
+     "g" "Google Test repeat:"
+     (format "%d (within each process)" gtest-repeat)
+     'font-lock-constant-face)
+    (my-projectile-tests--insert-setting
+     "p" "Parallel repeat:"
+     (format "%d (per test, across threads)" repeat)
+     'font-lock-constant-face)
     (my-projectile-tests--insert-setting
      "d" "Discovery mode:"
      (cond (fresh "IGNORED (run without cache is ON)")
@@ -286,6 +303,26 @@ Failed tests are still rerun with logging enabled."
                                 (plist-get my-projectile-tests-batch-settings :filter))))
   (my-projectile-tests--render-settings))
 
+(defun my-projectile-tests--set-repeat-count (key prompt)
+  "Read a repeat count with PROMPT and save it under setting KEY."
+  (let ((count (read-number prompt (my-projectile-tests--setting key 1))))
+    (unless (and (integerp count) (<= 1 count my-projectile-tests--max-repeat))
+      (user-error "Repeat count must be an integer from 1 to %d"
+                  my-projectile-tests--max-repeat))
+    (setq my-projectile-tests-batch-settings
+          (plist-put my-projectile-tests-batch-settings key count))
+    (my-projectile-tests--render-settings)))
+
+(defun my-projectile-tests--set-gtest-repeat ()
+  "Set --gtest_repeat for each test process and diagnostic rerun."
+  (interactive)
+  (my-projectile-tests--set-repeat-count :gtest-repeat "Google Test repeat: "))
+
+(defun my-projectile-tests--set-parallel-repeat ()
+  "Set how many independent iterations of each test run across the threads."
+  (interactive)
+  (my-projectile-tests--set-repeat-count :repeat "Parallel repeat per test: "))
+
 (defun my-projectile-tests--run-unit ()
   "Run unit tests using the settings displayed in this buffer."
   (interactive)
@@ -299,6 +336,8 @@ Failed tests are still rerun with logging enabled."
 (define-key my-projectile-tests-settings-mode-map (kbd "s") #'my-projectile-tests--toggle-slow)
 (define-key my-projectile-tests-settings-mode-map (kbd "t") #'my-projectile-tests--set-threads)
 (define-key my-projectile-tests-settings-mode-map (kbd "f") #'my-projectile-tests--set-filter)
+(define-key my-projectile-tests-settings-mode-map (kbd "g") #'my-projectile-tests--set-gtest-repeat)
+(define-key my-projectile-tests-settings-mode-map (kbd "p") #'my-projectile-tests--set-parallel-repeat)
 (define-key my-projectile-tests-settings-mode-map (kbd "d") #'my-projectile-tests--toggle-discovery)
 (define-key my-projectile-tests-settings-mode-map (kbd "r") #'my-projectile-tests--toggle-fresh)
 (define-key my-projectile-tests-settings-mode-map (kbd "l") #'my-projectile-tests--toggle-disable-logs)
@@ -374,6 +413,10 @@ Press TAB or RET on a failed test to expand its rerun logs."
            (unless final "Discovered tests; recording timings"))
        "Run without cache: discovered tests; round-robin scheduling; timing cache disabled"))))
 
+(defun my-projectile-tests--failed-p (status)
+  "Return non-nil if STATUS records a test or repeated-process failure."
+  (memq status '(failed process-failed)))
+
 (defun my-projectile-tests--render (batch &optional final)
   "Update BATCH's result buffer; fold failures if FINAL is non-nil."
   (when (buffer-live-p (my-projectile-tests--batch-buffer batch))
@@ -384,7 +427,7 @@ Press TAB or RET on a failed test to expand its rerun logs."
         (dolist (test (my-projectile-tests--batch-tests batch))
           (pcase (gethash test (my-projectile-tests--batch-results batch))
             ('passed (cl-incf passed))
-            ('failed (cl-incf failed))
+            ((or 'failed 'process-failed) (cl-incf failed))
             ('skipped (cl-incf skipped))
             (_ (cl-incf unrun))))
         (erase-buffer)
@@ -405,6 +448,11 @@ Press TAB or RET on a failed test to expand its rerun logs."
           (when-let* ((estimate (my-projectile-tests--batch-estimate batch)))
             (insert (propertize (format " (estimated %.2f)" estimate) 'face 'shadow))))
         (insert "\n")
+        (when (or (> (my-projectile-tests--batch-gtest-repeat batch) 1)
+                  (> (my-projectile-tests--batch-repeat batch) 1))
+          (insert (format "Repeats: %d within each process, %d parallel iterations per test\n"
+                          (my-projectile-tests--batch-gtest-repeat batch)
+                          (my-projectile-tests--batch-repeat batch))))
         (when-let* ((line (my-projectile-tests--source-text batch final)))
           (insert (propertize line 'face 'shadow) "\n"))
         (if final
@@ -433,12 +481,29 @@ Press TAB or RET on a failed test to expand its rerun logs."
                            (file-exists-p cache)))
                     "Loading cached test cases...\n")
                    (t "Discovering test cases...\n"))))
-        (when (and final (my-projectile-tests--batch-tests batch))
+        (when (and (my-projectile-tests--batch-tests batch)
+                   (or final (> (my-projectile-tests--batch-repeat batch) 1)))
           (dolist (test (my-projectile-tests--batch-tests batch))
-            (when (eq (gethash test (my-projectile-tests--batch-results batch)) 'failed)
-              (insert (propertize (format "\n* FAILED: %s\n" test) 'face 'error)
-                      (or (gethash test (my-projectile-tests--batch-logs batch))
-                          "No rerun output was captured.\n")))))
+            (let* ((status (gethash test (my-projectile-tests--batch-results batch)))
+                   (failed (my-projectile-tests--failed-p status)))
+              (when (or failed (> (my-projectile-tests--batch-repeat batch) 1))
+                (insert
+                 (propertize
+                  (format "\n* %s: %s\n"
+                          (pcase status
+                            ('passed "PASSED")
+                            ('failed "FAILED")
+                            ('process-failed "FAILED PROCESS")
+                            ('skipped "SKIPPED")
+                            ('not-run "NOT RUN")
+                            (_ "PENDING"))
+                          test)
+                  'face (cond (failed 'error)
+                              ((eq status 'passed) 'success)
+                              (t 'shadow))))
+                (when (and final failed)
+                  (insert (or (gethash test (my-projectile-tests--batch-logs batch))
+                              "No rerun output was captured.\n")))))))
         (when final
           (dolist (error-text (reverse (my-projectile-tests--batch-errors batch)))
             (insert (propertize "\n* Batch error\n" 'face 'error)
@@ -492,8 +557,15 @@ characters."
         (insert (format "Log file: %s\n\n" path))
         (buffer-string)))))
 
-(defun my-projectile-tests--read-xml (batch names path)
-  "Record BATCH results for NAMES from Google Test XML at PATH."
+(defun my-projectile-tests--test-label (batch name iteration)
+  "Return BATCH's result label for test NAME in parallel ITERATION."
+  (if (> (my-projectile-tests--batch-repeat batch) 1)
+      (format "%s [iteration %d/%d]" name iteration
+              (my-projectile-tests--batch-repeat batch))
+    name))
+
+(defun my-projectile-tests--read-xml (batch names iteration path)
+  "Record BATCH results for NAMES in ITERATION from Google Test XML at PATH."
   (let ((expected (make-hash-table :test 'equal))
         (reported (make-hash-table :test 'equal))
         (document (car (xml-parse-file path))))
@@ -507,7 +579,7 @@ characters."
                             (xml-get-attribute case-node 'name))))
           (when (gethash name expected)
             (puthash name t reported)
-            (puthash name
+            (puthash (my-projectile-tests--test-label batch name iteration)
                      (cond ((or (xml-get-children case-node 'failure)
                                 (xml-get-children case-node 'error)) 'failed)
                            ((or (xml-get-children case-node 'skipped)
@@ -517,34 +589,55 @@ characters."
                      (my-projectile-tests--batch-results batch))))))
     (dolist (name names)
       (unless (gethash name reported)
-        (puthash name 'not-run (my-projectile-tests--batch-results batch))))))
+        (puthash (my-projectile-tests--test-label batch name iteration)
+                 'not-run (my-projectile-tests--batch-results batch))))))
 
-(defun my-projectile-tests--chunk-finished (batch names exit-code xml log
-                                                  &optional start-error)
-  "Record BATCH's test process for NAMES, which exited with EXIT-CODE.
+(defun my-projectile-tests--chunk-finished
+    (batch names iteration exit-code xml log &optional start-error)
+  "Record BATCH's process for NAMES in ITERATION, exited with EXIT-CODE.
 Read results from Google Test XML and keep LOG for errors.  START-ERROR
 is the reason the runner could not start the process."
   (condition-case err
       (cond (start-error (error "Could not start test process: %s" start-error))
-            ((file-exists-p xml) (my-projectile-tests--read-xml batch names xml))
+            ((file-exists-p xml) (my-projectile-tests--read-xml batch names iteration xml))
             (t (error "Test process produced no Google Test XML")))
     (error
      (dolist (name names)
-       (puthash name 'not-run (my-projectile-tests--batch-results batch)))
-     (push (format "Test result error for %d %s: %s\n%s"
-                   (length names) (if (cdr names) "tests" "test")
+       (puthash (my-projectile-tests--test-label batch name iteration)
+                'not-run (my-projectile-tests--batch-results batch)))
+     (push (format "Test result error for %s (parallel iteration %d): %s\n%s"
+                   (string-join names ", ") iteration
                    (error-message-string err)
                    (if start-error "" (my-projectile-tests--log-text log)))
            (my-projectile-tests--batch-errors batch))))
   (when (and (not start-error)
              (not (zerop exit-code))
              (cl-every (lambda (name)
-                         (eq (gethash name (my-projectile-tests--batch-results batch))
+                         (eq (gethash (my-projectile-tests--test-label batch name iteration)
+                                      (my-projectile-tests--batch-results batch))
                              'passed))
                        names))
     (push (format "Test process exited with status %d without reported failures:\n%s"
                   exit-code (my-projectile-tests--log-text log))
           (my-projectile-tests--batch-errors batch)))
+  (when (and (not start-error) (not (zerop exit-code))
+             (> (my-projectile-tests--batch-gtest-repeat batch) 1))
+    (dolist (name names)
+      (let ((label (my-projectile-tests--test-label batch name iteration)))
+        (when (memq (gethash label (my-projectile-tests--batch-results batch))
+                    '(passed skipped))
+          (puthash label 'process-failed (my-projectile-tests--batch-results batch))))))
+  (dolist (name names)
+    (let ((label (my-projectile-tests--test-label batch name iteration)))
+      (when (my-projectile-tests--failed-p
+             (gethash label (my-projectile-tests--batch-results batch)))
+        (puthash label
+                 (concat (format "Original process exit status: %d\n" exit-code)
+                         (when (eq (gethash label (my-projectile-tests--batch-results batch))
+                                   'process-failed)
+                           "Process failed; XML reports only the final native repeat.\n")
+                         (my-projectile-tests--log-text log t))
+                 (my-projectile-tests--batch-logs batch)))))
   (cl-incf (my-projectile-tests--batch-tests-done batch) (length names))
   (my-projectile-tests--render batch))
 
@@ -552,7 +645,8 @@ is the reason the runner could not start the process."
   "Ask BATCH's runner to rerun each failed test with logging enabled."
   (let ((failed (cl-remove-if-not
                  (lambda (name)
-                   (eq (gethash name (my-projectile-tests--batch-results batch)) 'failed))
+                   (my-projectile-tests--failed-p
+                    (gethash name (my-projectile-tests--batch-results batch))))
                  (my-projectile-tests--batch-tests batch))))
     (setf (my-projectile-tests--batch-rerun-names batch) (vconcat failed)
           (my-projectile-tests--batch-reruns-total batch) (length failed)
@@ -561,7 +655,9 @@ is the reason the runner could not start the process."
         (my-projectile-tests--finish batch)
       (my-projectile-tests--render batch)
       (cl-loop for name in failed for id from 0
-               do (my-projectile-tests--send batch "rerun" (number-to-string id) name)))))
+               do (my-projectile-tests--send
+                   batch "rerun" (number-to-string id)
+                   (gethash name (my-projectile-tests--batch-test-names batch)))))))
 
 (defun my-projectile-tests--rerun-name (batch id)
   "Return the test name of BATCH's rerun ID."
@@ -569,8 +665,10 @@ is the reason the runner could not start the process."
 
 (defun my-projectile-tests--rerun-finished (batch id text)
   "Record TEXT as the log of BATCH's rerun ID; finish after the last one."
-  (puthash (my-projectile-tests--rerun-name batch id) text
-           (my-projectile-tests--batch-logs batch))
+  (let* ((name (my-projectile-tests--rerun-name batch id))
+         (original (gethash name (my-projectile-tests--batch-logs batch))))
+    (puthash name (if original (concat original "\nDiagnostic rerun:\n" text) text)
+             (my-projectile-tests--batch-logs batch)))
   (cl-incf (my-projectile-tests--batch-reruns-done batch))
   (if (= (my-projectile-tests--batch-reruns-done batch)
          (my-projectile-tests--batch-reruns-total batch))
@@ -584,8 +682,10 @@ is the reason the runner could not start the process."
      (unless (equal version my-projectile-tests--runner-protocol)
        (error "emacs-test-runner speaks protocol %s but %s is required; rebuild it (see README.md)"
               version my-projectile-tests--runner-protocol)))
-    (`("test" ,name)
-     (push name (my-projectile-tests--batch-discovering batch)))
+    (`("test" ,name ,iteration)
+     (let ((label (my-projectile-tests--test-label batch name (string-to-number iteration))))
+       (puthash label name (my-projectile-tests--batch-test-names batch))
+       (push label (my-projectile-tests--batch-discovering batch))))
     (`("discovered" ,_total ,_selected ,threads ,source ,estimate)
      (setf (my-projectile-tests--batch-tests batch)
            (nreverse (my-projectile-tests--batch-discovering batch))
@@ -608,10 +708,12 @@ is the reason the runner could not start the process."
            (cons (string-to-number timed) (string-to-number total))))
     (`("cache-failed" ,message)
      (push message (my-projectile-tests--batch-errors batch)))
-    (`("chunk-done" ,exit ,xml ,log . ,names)
-     (my-projectile-tests--chunk-finished batch names (string-to-number exit) xml log))
-    (`("chunk-failed" ,message . ,names)
-     (my-projectile-tests--chunk-finished batch names -1 nil nil message))
+    (`("chunk-done" ,iteration ,exit ,xml ,log . ,names)
+     (my-projectile-tests--chunk-finished
+      batch names (string-to-number iteration) (string-to-number exit) xml log))
+    (`("chunk-failed" ,iteration ,message . ,names)
+     (my-projectile-tests--chunk-finished
+      batch names (string-to-number iteration) -1 nil nil message))
     (`("run-finished")
      (my-projectile-tests--start-reruns batch))
     (`("rerun-done" ,id ,exit ,log)
@@ -706,6 +808,10 @@ is the reason the runner could not start the process."
     (my-projectile-tests--send batch "threads"
                                (number-to-string
                                 (my-projectile-tests--batch-thread-limit batch)))
+    (my-projectile-tests--send batch "gtest-repeat"
+                               (number-to-string (my-projectile-tests--batch-gtest-repeat batch)))
+    (my-projectile-tests--send batch "repeat"
+                               (number-to-string (my-projectile-tests--batch-repeat batch)))
     (unless (string-empty-p filter)
       (my-projectile-tests--send batch "filter" filter))
     (when (my-projectile-tests--batch-exclude-slow batch)
@@ -747,6 +853,9 @@ is the reason the runner could not start the process."
                                    (my-projectile-tests--default-threads))
                  :exclude-slow (plist-get settings :exclude-slow)
                  :filter (or (plist-get settings :filter) "")
+                 :gtest-repeat (my-projectile-tests--setting :gtest-repeat 1)
+                 :repeat (my-projectile-tests--setting :repeat 1)
+                 :test-names (make-hash-table :test 'equal)
                  :discover (and (not fresh) (plist-get settings :discover))
                  :cache (unless fresh (my-projectile-tests--cache-file executable))
                  :results (make-hash-table :test 'equal)
@@ -785,10 +894,16 @@ long each takes; other batches reuse that list and balance the tests
 across threads by their recorded durations.  Press u or i to launch
 unit or integration tests.  Press r to toggle run without cache: always discover
 tests and distribute them round-robin without reading or writing a
-timing cache.  Run without cache overrides discovery mode.  Settings persist across
-Emacs sessions.  Press l or c to toggle TnT's disableLogs or
+timing cache.  Run without cache overrides discovery mode.  Settings persist
+across Emacs sessions.  Press l or c to toggle TnT's disableLogs or
 disableCallstackResolution flag; both default to enabled.
-Batches run through emacs-test-runner, which must be built first (see README.md).
+Press g to set --gtest_repeat within each process, or p to repeat each
+selected test independently across the threads.  Both counts default to 1,
+and multiply when used together.
+Every parallel iteration has its own result and retains its original failure
+log, even if a later iteration or diagnostic rerun passes.
+Batches run through emacs-test-runner, which must be built first
+(see README.md).
 Failed cases are rerun with logging enabled; press TAB on a failure in
 the result buffer to inspect its logs.
 When called with KIND from Lisp, run that kind directly."
