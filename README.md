@@ -117,9 +117,10 @@ breadcrumbs.
 
 - `C-c p c u` runs unit tests and `C-c p c n` runs integration tests. Both
   prompt for a command, prefilled with the matching executable in TnT.
-- `C-c p c b` opens the batch settings: `s` excludes SLOW tests, `t` sets the
-  thread count (default: half the logical CPUs), `f` sets a name filter, `d`
-  toggles discovery mode, `r` toggles **Run without cache**, `l`/`c` toggle
+- `C-c p c b` opens the batch settings: `s` toggles SLOW-test exclusion
+  (default: excluded), `t` sets the thread count (default: half the logical
+  CPUs), `f` sets a name filter, `d` toggles discovery mode (default: off),
+  `r` toggles **Run without cache**, `l`/`c` toggle
   `disableLogs`/`disableCallstackResolution`, `g` sets **Google Test repeat**,
   `p` sets **Parallel repeat**, and `u`/`i` run
   unit/integration tests. Both disable flags default to enabled, apply only

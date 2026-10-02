@@ -40,6 +40,7 @@
 (defvar my-projectile-tests-batch-settings nil
   "Saved batch settings: :exclude-slow, :threads, :filter, :discover, :fresh,
 :disable-logs, :disable-callstack-resolution, :gtest-repeat and :repeat.
+SLOW tests are excluded and discovery mode is off by default.
 The thread count defaults to half the available logical CPUs.
 Both TnT disable flags default to enabled when their settings are absent.
 Both repeat counts default to 1.")
@@ -130,14 +131,14 @@ With prefix ARG, force the command prompt."
 
 (define-derived-mode my-projectile-tests-settings-mode special-mode "Projectile Batch Settings"
   "Major mode for choosing and launching parallel Google Test batches.
-Press s to exclude SLOW tests, t to set threads, f to set an include filter,
-d to toggle discovery mode, r to toggle runs without cache, l/c to toggle
-TnT's disableLogs/disableCallstackResolution flags, or u/i to run
+Press s to toggle SLOW-test exclusion, t to set threads, f to set an
+include filter, d to toggle discovery mode, r to toggle runs without cache,
+l/c to toggle TnT's disableLogs/disableCallstackResolution flags, or u/i to run
 unit/integration tests with the displayed settings.
 Press g to set --gtest_repeat within each process, or p to set independent
 parallel repeats of each selected test.
 Default values are muted; active non-default values use the theme's
-warning face.")
+warning face.  By default, SLOW tests are excluded and discovery is off.")
 
 (defun my-projectile-tests--setting (key &optional default)
   "Return saved batch setting KEY, or DEFAULT if KEY has no saved value."
@@ -162,7 +163,7 @@ otherwise use the muted shadow face."
   "Show the current batch settings in the settings buffer."
   (let* ((inhibit-read-only t)
          (settings my-projectile-tests-batch-settings)
-         (exclude-slow (plist-get settings :exclude-slow))
+         (exclude-slow (my-projectile-tests--setting :exclude-slow t))
          (threads (plist-get settings :threads))
          (filter (plist-get settings :filter))
          (discover (plist-get settings :discover))
@@ -188,7 +189,7 @@ otherwise use the muted shadow face."
     (my-projectile-tests--insert-setting
      "s" "SLOW tests:"
      (if exclude-slow "EXCLUDE" "INCLUDE")
-     exclude-slow)
+     (not exclude-slow))
     (my-projectile-tests--insert-setting
      "t" "Threads:"
      (if threads (number-to-string threads)
@@ -243,7 +244,7 @@ otherwise use the muted shadow face."
   (interactive)
   (setq my-projectile-tests-batch-settings
         (plist-put my-projectile-tests-batch-settings :exclude-slow
-                   (not (plist-get my-projectile-tests-batch-settings :exclude-slow))))
+                   (not (my-projectile-tests--setting :exclude-slow t))))
   (my-projectile-tests--render-settings))
 
 (defun my-projectile-tests--toggle-discovery ()
@@ -855,7 +856,7 @@ is the reason the runner could not start the process."
                  :buffer buffer :cpus (num-processors)
                  :thread-limit (or (plist-get settings :threads)
                                    (my-projectile-tests--default-threads))
-                 :exclude-slow (plist-get settings :exclude-slow)
+                 :exclude-slow (my-projectile-tests--setting :exclude-slow t)
                  :filter (or (plist-get settings :filter) "")
                  :gtest-repeat (my-projectile-tests--setting :gtest-repeat 1)
                  :repeat (my-projectile-tests--setting :repeat 1)
@@ -891,11 +892,12 @@ is the reason the runner could not start the process."
 
 (defun my-projectile-test-project-batch (&optional kind)
   "Open batch settings for the current project.
-Press s to exclude SLOW tests, t to choose the thread count, and f to
-include only test names containing a case-sensitive substring.  Press
-d to toggle discovery mode, which lists the tests again and records how
-long each takes; other batches reuse that list and balance the tests
-across threads by their recorded durations.  Press u or i to launch
+Press s to toggle SLOW-test exclusion (on by default), t to choose the
+thread count, and f to include only test names containing a case-sensitive
+substring.  Press d to toggle discovery mode (off by default), which lists
+the tests again and records how long each takes; other batches reuse that
+list and balance the tests across threads by their recorded durations.
+Press u or i to launch
 unit or integration tests.  Press r to toggle run without cache: always discover
 tests and distribute them round-robin without reading or writing a
 timing cache.  Run without cache overrides discovery mode.  Settings persist
