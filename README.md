@@ -72,7 +72,7 @@ Check the result with `emacs-test-runner/build/emacs-test-runner --version`.
 Rebuild after pulling changes to `emacs-test-runner/`; Emacs reports a
 protocol mismatch if the build is outdated.
 
-With Python 3 available, check cache refresh, fresh runs, filtering and
+With Python 3 available, check cache refresh, runs without cache, filtering and
 multi-process scheduling on Windows:
 
 ```powershell
@@ -119,7 +119,7 @@ breadcrumbs.
   prompt for a command, prefilled with the matching executable in TnT.
 - `C-c p c b` opens the batch settings: `s` excludes SLOW tests, `t` sets the
   thread count (default: half the logical CPUs), `f` sets a name filter, `d`
-  toggles discovery mode, `r` toggles **Run fresh**, and `u`/`i` run
+  toggles discovery mode, `r` toggles **Run without cache**, and `u`/`i` run
   unit/integration tests. Outside TnT
   it prompts for the Google Test executable. Failed tests are rerun with
   logging; press `TAB` on a failure to expand its log. Killing the result
@@ -130,7 +130,7 @@ breadcrumbs.
   Discovery mode also lists the tests again; use it after adding or removing
   tests. The first batch for an executable always discovers. Caches live in
   `.cache/emacs-test-runner/`.
-- **Run fresh** always discovers tests and distributes the selected tests
+- **Run without cache** always discovers tests and distributes the selected tests
   round-robin, ignoring cached test lists, durations and process overhead.
   It does not read, create or update the timing cache or record timings.
   It overrides discovery mode while enabled; turning it off restores the

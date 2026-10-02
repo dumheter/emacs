@@ -16,7 +16,7 @@
 ;; test's duration in a timing cache per executable.  Batches normally use
 ;; the cache and schedule the tests so that all threads finish together.
 ;; Every cached run refreshes the durations.  Discovery mode (d in the
-;; settings) also lists the tests again.  Run fresh (r) discovers and
+;; settings) also lists the tests again.  Run without cache (r) discovers and
 ;; distributes tests round-robin without reading or writing a cache.
 
 ;;; Code:
@@ -124,7 +124,7 @@ With prefix ARG, force the command prompt."
 (define-derived-mode my-projectile-tests-settings-mode special-mode "Projectile Batch Settings"
   "Major mode for choosing and launching parallel Google Test batches.
 Press s to exclude SLOW tests, t to set threads, f to set an include filter,
-d to toggle discovery mode, r to toggle cache-free fresh runs, or u/i to
+d to toggle discovery mode, r to toggle runs without cache, or u/i to
 run unit/integration tests with the displayed settings.")
 
 (defun my-projectile-tests--default-threads ()
@@ -175,12 +175,12 @@ run unit/integration tests with the displayed settings.")
          'shadow 'font-lock-string-face))
     (my-projectile-tests--insert-setting
      "d" "Discovery mode:"
-     (cond (fresh "IGNORED (run fresh is ON)")
+     (cond (fresh "IGNORED (run without cache is ON)")
            (discover "ON (list tests and record timings)")
            (t "OFF (use cached tests and timings)"))
      (if (and discover (not fresh)) 'success 'shadow))
     (my-projectile-tests--insert-setting
-     "r" "Run fresh:"
+     "r" "Run without cache:"
      (if fresh "ON (discover; no cache or timings)" "OFF")
      (if fresh 'success 'shadow))
     (insert "\n  "
@@ -210,7 +210,7 @@ run unit/integration tests with the displayed settings.")
 In discovery mode a batch lists the test cases again and records how
 long each one takes.  Otherwise it uses the list and timings recorded
 by the last discovery to give every thread an equal share of work.
-Run fresh overrides this setting without changing its saved value."
+Run without cache overrides this setting without changing its saved value."
   (interactive)
   (setq my-projectile-tests-batch-settings
         (plist-put my-projectile-tests-batch-settings :discover
@@ -218,8 +218,8 @@ Run fresh overrides this setting without changing its saved value."
   (my-projectile-tests--render-settings))
 
 (defun my-projectile-tests--toggle-fresh ()
-  "Toggle fresh runs without reading or writing the timing cache.
-Fresh runs always discover tests and distribute them round-robin.
+  "Toggle runs without reading or writing the timing cache.
+Runs without cache always discover tests and distribute them round-robin.
 This overrides discovery mode while enabled."
   (interactive)
   (setq my-projectile-tests-batch-settings
@@ -333,7 +333,7 @@ Press TAB or RET on a failed test to expand its rerun logs."
              (format "Discovered tests; recorded timings for %d/%d tests"
                      (car timed) (cdr timed))
            (unless final "Discovered tests; recording timings"))
-       "Run fresh: discovered tests; round-robin scheduling; timing cache disabled"))))
+       "Run without cache: discovered tests; round-robin scheduling; timing cache disabled"))))
 
 (defun my-projectile-tests--render (batch &optional final)
   "Update BATCH's result buffer; fold failures if FINAL is non-nil."
@@ -739,9 +739,9 @@ include only test names containing a case-sensitive substring.  Press
 d to toggle discovery mode, which lists the tests again and records how
 long each takes; other batches reuse that list and balance the tests
 across threads by their recorded durations.  Press u or i to launch
-unit or integration tests.  Press r to toggle run fresh: always discover
+unit or integration tests.  Press r to toggle run without cache: always discover
 tests and distribute them round-robin without reading or writing a
-timing cache.  Run fresh overrides discovery mode.  Settings persist across
+timing cache.  Run without cache overrides discovery mode.  Settings persist across
 Emacs sessions.  Batches run through emacs-test-runner, which must be
 built first (see README.md).
 Failed cases are rerun with logging enabled; press TAB on a failure in

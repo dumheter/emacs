@@ -21,7 +21,7 @@
       (should (get-text-property (1+ (match-beginning 0)) 'face))
       (should (string-match-p "SLOW tests: *INCLUDE" (buffer-string)))
       (should (string-match-p "Threads: *auto" (buffer-string)))
-      (should (string-match-p "Run fresh: *OFF" (buffer-string)))
+      (should (string-match-p "Run without cache: *OFF" (buffer-string)))
       (should (eq (lookup-key my-projectile-tests-settings-mode-map (kbd "u"))
                   #'my-projectile-tests--run-unit))
       (should (eq (lookup-key my-projectile-tests-settings-mode-map (kbd "r"))
@@ -30,7 +30,7 @@
       (call-interactively (lookup-key (current-local-map) (kbd "r")))
       (should (plist-get my-projectile-tests-batch-settings :fresh))
       (should (plist-get my-projectile-tests-batch-settings :discover))
-      (should (string-match-p "Run fresh: *ON (discover; no cache or timings)"
+      (should (string-match-p "Run without cache: *ON (discover; no cache or timings)"
                               (buffer-string)))
       (should (string-match-p "Discovery mode: *IGNORED" (buffer-string)))
       (my-projectile-tests--toggle-fresh)
@@ -283,7 +283,7 @@
         (should-not (my-projectile-tests--batch-estimate batch))
         (dolist (final '(nil t))
           (my-projectile-tests--render batch final)
-          (should (string-match-p "Run fresh: discovered tests; round-robin scheduling"
+          (should (string-match-p "Run without cache: discovered tests; round-robin scheduling"
                                   (buffer-string)))
           (should (string-match-p "timing cache disabled" (buffer-string)))
           (should-not (string-match-p "recording timings\\|recorded timings\\|estimated"
