@@ -72,8 +72,8 @@ Check the result with `emacs-test-runner/build/emacs-test-runner --version`.
 Rebuild after pulling changes to `emacs-test-runner/`; Emacs reports a
 protocol mismatch if the build is outdated.
 
-With Python 3 available, check cache refresh, filtering and multi-process
-scheduling on Windows:
+With Python 3 available, check cache refresh, fresh runs, filtering and
+multi-process scheduling on Windows:
 
 ```powershell
 python emacs-test-runner\tests.py emacs-test-runner\build\emacs-test-runner.exe
@@ -119,7 +119,8 @@ breadcrumbs.
   prompt for a command, prefilled with the matching executable in TnT.
 - `C-c p c b` opens the batch settings: `s` excludes SLOW tests, `t` sets the
   thread count (default: half the logical CPUs), `f` sets a name filter, `d`
-  toggles discovery mode, and `u`/`i` run unit/integration tests. Outside TnT
+  toggles discovery mode, `r` toggles **Run fresh**, and `u`/`i` run
+  unit/integration tests. Outside TnT
   it prompts for the Google Test executable. Failed tests are rerun with
   logging; press `TAB` on a failure to expand its log. Killing the result
   buffer stops the batch.
@@ -129,6 +130,11 @@ breadcrumbs.
   Discovery mode also lists the tests again; use it after adding or removing
   tests. The first batch for an executable always discovers. Caches live in
   `.cache/emacs-test-runner/`.
+- **Run fresh** always discovers tests and distributes the selected tests
+  round-robin, ignoring cached test lists, durations and process overhead.
+  It does not read, create or update the timing cache or record timings.
+  It overrides discovery mode while enabled; turning it off restores the
+  saved discovery setting. Filters, SLOW exclusion and thread count still apply.
 - More threads are not necessarily faster: test executables can have their
   own worker threads, and concurrent process startup also competes for
   resources. Compare nearby thread counts with `t`, keeping the same filter
@@ -187,7 +193,7 @@ Commands:
 | `threads N` | Parallel test processes, 1-1024 (default 1). |
 | `filter TEXT` | Run only tests whose full name contains `TEXT`. |
 | `exclude-slow` | Skip tests with `SLOW` at the start of the suite, the case or a `/` segment. |
-| `cache PATH` | Timing cache file. Without `rediscover`, a readable cache replaces discovery. |
+| `cache PATH` | Timing cache file. Without `rediscover`, a readable cache replaces discovery. Omit to always discover, schedule round-robin and disable timing recording and cache reads/writes. |
 | `rediscover` | List the tests even if the cache exists. All cached runs record timings. |
 | `run` | Discover and run the tests. Configuration is fixed afterwards. |
 | `rerun ID NAME` | Run test `NAME` alone with the rerun arguments. |

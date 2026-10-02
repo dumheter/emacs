@@ -57,23 +57,29 @@ def fake_gtest():
 
 class RunnerTests(unittest.TestCase):
     def run_batch(self, names, durations, threads=2, filter_text=None,
-                  exclude_slow=False, invalid_cache=False, rediscover=False):
+                  exclude_slow=False, invalid_cache=False, rediscover=False,
+                  fresh=False, cached_names=None):
         with tempfile.TemporaryDirectory(prefix="emacs-runner-test-") as directory:
             outdir = pathlib.Path(directory)
             cache = outdir / "timings.etr"
             scenario = outdir / "scenario.json"
             scenario.write_text(json.dumps(dict(
                 names=names, observed_us=1000,
-                forbid_discovery=not (invalid_cache or rediscover))))
+                forbid_discovery=not (invalid_cache or rediscover or fresh))))
             overhead = 2_000_000
             if invalid_cache:
                 cache.write_bytes(b"invalid")
             else:
-                write_cache(cache, names, durations, overhead)
+                write_cache(cache, names if cached_names is None else cached_names,
+                            durations, overhead)
+            original_cache = cache.read_bytes()
+            original_mtime = cache.stat().st_mtime_ns
             commands = [f"exe\t{sys.executable}", f"cwd\t{directory}",
                         f"outdir\t{directory}", f"arg\t{pathlib.Path(__file__).resolve()}",
                         "arg\t--fake-gtest", f"arg\t{scenario}",
-                        f"cache\t{cache}", f"threads\t{threads}"]
+                        f"threads\t{threads}"]
+            if not fresh:
+                commands.append(f"cache\t{cache}")
             if filter_text is not None:
                 commands.append(f"filter\t{filter_text}")
             if exclude_slow:
@@ -105,7 +111,12 @@ class RunnerTests(unittest.TestCase):
             reported = [name for e in chunks for name in e[4:]]
             self.assertCountEqual(reported, selected)
             self.assertEqual(len(reported), len(set(reported)))
-            self.assertEqual(sum(e[0] == "cache-saved" for e in events), 1)
+            self.assertEqual(sum(e[0] == "cache-saved" for e in events), 0 if fresh else 1)
+            if fresh:
+                self.assertFalse(any(e[0] == "cache-failed" for e in events), events)
+                self.assertEqual(cache.read_bytes(), original_cache)
+                self.assertEqual(cache.stat().st_mtime_ns, original_mtime)
+                return events, selected, chunks, None
             return events, selected, chunks, read_cache(cache)
 
     def test_cached_run_refreshes_timings_without_discovery(self):
@@ -178,6 +189,25 @@ class RunnerTests(unittest.TestCase):
             ["Suite.One", "Suite.Two"], [5000] * 2, rediscover=True)
         self.assertEqual(next(e for e in events if e[0] == "discovered")[4], "listed")
         self.assertEqual(durations, (1000, 1000))
+
+    def test_fresh_run_ignores_cached_list_and_timings(self):
+        names = [f"Suite.Case{i}" for i in range(7)]
+        events, selected, chunks, _ = self.run_batch(
+            names, [90_000_000, 1_000_000] + [1000] * 6, fresh=True,
+            cached_names=["Cached.Stale", *names])
+        self.assertEqual(selected, names)
+        chunks.sort(key=lambda e: int(pathlib.Path(e[2]).stem.split("-")[1]))
+        self.assertEqual([e[4:] for e in chunks], [names[::2], names[1::2]])
+        self.assertEqual(next(e for e in events if e[0] == "discovered")[4:], ["listed", "0"])
+
+    def test_fresh_run_ignores_invalid_cache_and_applies_filters(self):
+        names = ["Suite.Fast", "Suite.Fast/0", "Suite.Other",
+                 "SLOW_Suite.Fast", "Suite.SLOW_Fast"]
+        events, selected, _, _ = self.run_batch(
+            names, [], fresh=True, invalid_cache=True,
+            filter_text="Fast", exclude_slow=True)
+        self.assertEqual(selected, names[:2])
+        self.assertEqual(next(e for e in events if e[0] == "discovered")[4:], ["listed", "0"])
 
 
 if __name__ == "__main__":

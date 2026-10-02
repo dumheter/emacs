@@ -16,7 +16,8 @@
 ;; test's duration in a timing cache per executable.  Batches normally use
 ;; the cache and schedule the tests so that all threads finish together.
 ;; Every cached run refreshes the durations.  Discovery mode (d in the
-;; settings) also lists the tests again.
+;; settings) also lists the tests again.  Run fresh (r) discovers and
+;; distributes tests round-robin without reading or writing a cache.
 
 ;;; Code:
 
@@ -37,7 +38,7 @@
   "Last integration test command used in each project compilation directory.")
 
 (defvar my-projectile-tests-batch-settings nil
-  "Saved batch settings: :exclude-slow, :threads, :filter and :discover.
+  "Saved batch settings: :exclude-slow, :threads, :filter, :discover and :fresh.
 The thread count defaults to half the available logical CPUs.")
 
 (defvar my-projectile-tests-cache-directory
@@ -123,8 +124,8 @@ With prefix ARG, force the command prompt."
 (define-derived-mode my-projectile-tests-settings-mode special-mode "Projectile Batch Settings"
   "Major mode for choosing and launching parallel Google Test batches.
 Press s to exclude SLOW tests, t to set threads, f to set an include filter,
-d to toggle discovery mode, or u/i to run unit/integration tests with the
-displayed settings.")
+d to toggle discovery mode, r to toggle cache-free fresh runs, or u/i to
+run unit/integration tests with the displayed settings.")
 
 (defun my-projectile-tests--default-threads ()
   "Return the default number of parallel test threads."
@@ -145,6 +146,7 @@ displayed settings.")
          (threads (plist-get settings :threads))
          (filter (plist-get settings :filter))
          (discover (plist-get settings :discover))
+         (fresh (plist-get settings :fresh))
          (thread-count (or threads (my-projectile-tests--default-threads))))
     (erase-buffer)
     (insert "  "
@@ -173,9 +175,14 @@ displayed settings.")
          'shadow 'font-lock-string-face))
     (my-projectile-tests--insert-setting
      "d" "Discovery mode:"
-     (if discover "ON (list tests and record timings)"
-       "OFF (use cached tests and timings)")
-     (if discover 'success 'shadow))
+     (cond (fresh "IGNORED (run fresh is ON)")
+           (discover "ON (list tests and record timings)")
+           (t "OFF (use cached tests and timings)"))
+     (if (and discover (not fresh)) 'success 'shadow))
+    (my-projectile-tests--insert-setting
+     "r" "Run fresh:"
+     (if fresh "ON (discover; no cache or timings)" "OFF")
+     (if fresh 'success 'shadow))
     (insert "\n  "
             (propertize "RUN" 'face '(:inherit font-lock-keyword-face
                                               :weight bold))
@@ -202,11 +209,22 @@ displayed settings.")
   "Toggle discovery mode.
 In discovery mode a batch lists the test cases again and records how
 long each one takes.  Otherwise it uses the list and timings recorded
-by the last discovery to give every thread an equal share of work."
+by the last discovery to give every thread an equal share of work.
+Run fresh overrides this setting without changing its saved value."
   (interactive)
   (setq my-projectile-tests-batch-settings
         (plist-put my-projectile-tests-batch-settings :discover
                    (not (plist-get my-projectile-tests-batch-settings :discover))))
+  (my-projectile-tests--render-settings))
+
+(defun my-projectile-tests--toggle-fresh ()
+  "Toggle fresh runs without reading or writing the timing cache.
+Fresh runs always discover tests and distribute them round-robin.
+This overrides discovery mode while enabled."
+  (interactive)
+  (setq my-projectile-tests-batch-settings
+        (plist-put my-projectile-tests-batch-settings :fresh
+                   (not (plist-get my-projectile-tests-batch-settings :fresh))))
   (my-projectile-tests--render-settings))
 
 (defun my-projectile-tests--set-threads ()
@@ -245,6 +263,7 @@ by the last discovery to give every thread an equal share of work."
 (define-key my-projectile-tests-settings-mode-map (kbd "t") #'my-projectile-tests--set-threads)
 (define-key my-projectile-tests-settings-mode-map (kbd "f") #'my-projectile-tests--set-filter)
 (define-key my-projectile-tests-settings-mode-map (kbd "d") #'my-projectile-tests--toggle-discovery)
+(define-key my-projectile-tests-settings-mode-map (kbd "r") #'my-projectile-tests--toggle-fresh)
 (define-key my-projectile-tests-settings-mode-map (kbd "u") #'my-projectile-tests--run-unit)
 (define-key my-projectile-tests-settings-mode-map (kbd "i") #'my-projectile-tests--run-integration)
 (define-key my-projectile-tests-settings-mode-map (kbd "q") #'quit-window)
@@ -309,10 +328,12 @@ Press TAB or RET on a failed test to expand its rerun logs."
                  (format "; updated timing cache (%d/%d timed)" (car timed) (cdr timed))
                "")))
     ("listed"
-     (if-let* ((timed (my-projectile-tests--batch-timed batch)))
-         (format "Discovered tests; recorded timings for %d/%d tests"
-                 (car timed) (cdr timed))
-       (unless final "Discovered tests; recording timings")))))
+     (if (my-projectile-tests--batch-cache batch)
+         (if-let* ((timed (my-projectile-tests--batch-timed batch)))
+             (format "Discovered tests; recorded timings for %d/%d tests"
+                     (car timed) (cdr timed))
+           (unless final "Discovered tests; recording timings"))
+       "Run fresh: discovered tests; round-robin scheduling; timing cache disabled"))))
 
 (defun my-projectile-tests--render (batch &optional final)
   "Update BATCH's result buffer; fold failures if FINAL is non-nil."
@@ -624,7 +645,8 @@ is the reason the runner could not start the process."
         (default-directory (my-projectile-tests--batch-root batch)))
     (setf (my-projectile-tests--batch-outdir batch)
           (make-temp-file "emacs-test-runner-" t))
-    (make-directory (file-name-directory cache) t)
+    (when cache
+      (make-directory (file-name-directory cache) t))
     (let ((process (make-process
                     :name "emacs-test-runner"
                     :command (list program)
@@ -649,9 +671,10 @@ is the reason the runner could not start the process."
       (my-projectile-tests--send batch "filter" filter))
     (when (my-projectile-tests--batch-exclude-slow batch)
       (my-projectile-tests--send batch "exclude-slow"))
-    (my-projectile-tests--send batch "cache" cache)
-    (when (my-projectile-tests--batch-discover batch)
-      (my-projectile-tests--send batch "rediscover"))
+    (when cache
+      (my-projectile-tests--send batch "cache" cache)
+      (when (my-projectile-tests--batch-discover batch)
+        (my-projectile-tests--send batch "rediscover")))
     (my-projectile-tests--send batch "run")))
 
 (defun my-projectile-tests--start-batch (kind root)
@@ -662,6 +685,7 @@ is the reason the runner could not start the process."
     (user-error "No project selected for batch tests"))
   (let* ((runner (my-projectile-tests--runner))
          (settings my-projectile-tests-batch-settings)
+         (fresh (plist-get settings :fresh))
          (tnt (my-projectile-tests--tnt-p root))
          (executable (if tnt
                          (expand-file-name
@@ -679,8 +703,8 @@ is the reason the runner could not start the process."
                                    (my-projectile-tests--default-threads))
                  :exclude-slow (plist-get settings :exclude-slow)
                  :filter (or (plist-get settings :filter) "")
-                 :discover (plist-get settings :discover)
-                 :cache (my-projectile-tests--cache-file executable)
+                 :discover (and (not fresh) (plist-get settings :discover))
+                 :cache (unless fresh (my-projectile-tests--cache-file executable))
                  :results (make-hash-table :test 'equal)
                  :logs (make-hash-table :test 'equal)
                  :tests-done 0)))
@@ -715,7 +739,9 @@ include only test names containing a case-sensitive substring.  Press
 d to toggle discovery mode, which lists the tests again and records how
 long each takes; other batches reuse that list and balance the tests
 across threads by their recorded durations.  Press u or i to launch
-unit or integration tests.  Settings persist across
+unit or integration tests.  Press r to toggle run fresh: always discover
+tests and distribute them round-robin without reading or writing a
+timing cache.  Run fresh overrides discovery mode.  Settings persist across
 Emacs sessions.  Batches run through emacs-test-runner, which must be
 built first (see README.md).
 Failed cases are rerun with logging enabled; press TAB on a failure in

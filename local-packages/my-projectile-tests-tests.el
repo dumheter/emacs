@@ -21,8 +21,22 @@
       (should (get-text-property (1+ (match-beginning 0)) 'face))
       (should (string-match-p "SLOW tests: *INCLUDE" (buffer-string)))
       (should (string-match-p "Threads: *auto" (buffer-string)))
+      (should (string-match-p "Run fresh: *OFF" (buffer-string)))
       (should (eq (lookup-key my-projectile-tests-settings-mode-map (kbd "u"))
                   #'my-projectile-tests--run-unit))
+      (should (eq (lookup-key my-projectile-tests-settings-mode-map (kbd "r"))
+                  #'my-projectile-tests--toggle-fresh))
+      (my-projectile-tests--toggle-discovery)
+      (call-interactively (lookup-key (current-local-map) (kbd "r")))
+      (should (plist-get my-projectile-tests-batch-settings :fresh))
+      (should (plist-get my-projectile-tests-batch-settings :discover))
+      (should (string-match-p "Run fresh: *ON (discover; no cache or timings)"
+                              (buffer-string)))
+      (should (string-match-p "Discovery mode: *IGNORED" (buffer-string)))
+      (my-projectile-tests--toggle-fresh)
+      (should-not (plist-get my-projectile-tests-batch-settings :fresh))
+      (should (plist-get my-projectile-tests-batch-settings :discover))
+      (should (string-match-p "Discovery mode: *ON" (buffer-string)))
       (my-projectile-tests--toggle-slow)
       (should (plist-get my-projectile-tests-batch-settings :exclude-slow))
       (should (string-match-p "SLOW tests: *EXCLUDE" (buffer-string)))
@@ -130,21 +144,27 @@
 
 (ert-deftest my-projectile-tests-launch-captures-settings ()
   (let ((my-projectile-tests-batch-settings
-         '(:exclude-slow t :threads 4 :filter "Fast"))
+         '(:exclude-slow t :threads 4 :filter "Fast" :discover t))
         (buffer nil))
     (unwind-protect
-        (cl-letf (((symbol-function 'read-file-name) (lambda (&rest _) "tests.exe"))
+        (cl-letf (((symbol-function 'my-projectile-tests--runner)
+                   (lambda () "runner.exe"))
+                  ((symbol-function 'read-file-name) (lambda (&rest _) "tests.exe"))
                   ((symbol-function 'file-regular-p) (lambda (&rest _) t))
                   ((symbol-function 'file-executable-p) (lambda (&rest _) t))
                   ((symbol-function 'save-some-buffers) (lambda (&rest _) nil))
                   ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
-                  ((symbol-function 'my-projectile-tests--start-process)
-                   (lambda (_batch stage) (should (eq stage 'listing)))))
+                  ((symbol-function 'my-projectile-tests--start-runner)
+                   (lambda (&rest _) nil)))
           (let ((batch (my-projectile-tests--start-batch 'unit "C:\\src\\Other\\")))
             (setq buffer (my-projectile-tests--batch-buffer batch))
             (should (= (my-projectile-tests--batch-thread-limit batch) 4))
             (should (my-projectile-tests--batch-exclude-slow batch))
             (should (equal (my-projectile-tests--batch-filter batch) "Fast"))
+            (should (my-projectile-tests--batch-discover batch))
+            (should (equal (my-projectile-tests--batch-cache batch)
+                           (my-projectile-tests--cache-file
+                            (my-projectile-tests--batch-executable batch))))
             (setf (my-projectile-tests--batch-finished batch) t)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -153,14 +173,15 @@
   (let ((savehist-file (make-temp-file "projectile-tests-history-"))
         (savehist-additional-variables '(my-projectile-tests-batch-settings))
         (my-projectile-tests-batch-settings
-         '(:exclude-slow t :threads 3 :filter "Fast")))
+         '(:exclude-slow t :threads 3 :filter "Fast" :discover t :fresh t)))
     (unwind-protect
         (progn
           (savehist-save)
           (setq my-projectile-tests-batch-settings nil)
           (load savehist-file nil t)
           (should (equal my-projectile-tests-batch-settings
-                         '(:exclude-slow t :threads 3 :filter "Fast"))))
+                         '(:exclude-slow t :threads 3 :filter "Fast"
+                           :discover t :fresh t))))
       (delete-file savehist-file))))
 
 (ert-deftest my-projectile-tests-cached-timings-refreshed ()
@@ -174,6 +195,108 @@
                             (my-projectile-tests--source-text batch t)))
     (should (string-match-p "press d"
                             (my-projectile-tests--source-text batch t)))))
+
+(ert-deftest my-projectile-tests-fresh-launch-captures-settings ()
+  (dolist (kind '(unit integration))
+    (dolist (discover '(nil t))
+      (let ((my-projectile-tests-batch-settings
+             (list :exclude-slow t :threads 4 :filter "Fast"
+                   :discover discover :fresh t))
+            (buffer nil))
+        (unwind-protect
+            (cl-letf (((symbol-function 'my-projectile-tests--runner)
+                       (lambda () "runner.exe"))
+                      ((symbol-function 'read-file-name) (lambda (&rest _) "tests.exe"))
+                      ((symbol-function 'file-regular-p) (lambda (&rest _) t))
+                      ((symbol-function 'file-executable-p) (lambda (&rest _) t))
+                      ((symbol-function 'save-some-buffers) (lambda (&rest _) nil))
+                      ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+                      ((symbol-function 'my-projectile-tests--cache-file)
+                       (lambda (&rest _) (ert-fail "Fresh run requested a cache path")))
+                      ((symbol-function 'my-projectile-tests--start-runner)
+                       (lambda (&rest _) nil)))
+              (let ((batch (my-projectile-tests--start-batch kind "C:\\src\\Other\\")))
+                (setq buffer (my-projectile-tests--batch-buffer batch))
+                (should (eq (my-projectile-tests--batch-kind batch) kind))
+                (should (= (my-projectile-tests--batch-thread-limit batch) 4))
+                (should (my-projectile-tests--batch-exclude-slow batch))
+                (should (equal (my-projectile-tests--batch-filter batch) "Fast"))
+                (should-not (my-projectile-tests--batch-cache batch))
+                (should-not (my-projectile-tests--batch-discover batch))
+                (should (eq (plist-get my-projectile-tests-batch-settings :discover)
+                            discover))
+                (should (string-match-p "Discovering test cases"
+                                        (with-current-buffer buffer (buffer-string))))
+                (setf (my-projectile-tests--batch-finished batch) t)))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
+
+(ert-deftest my-projectile-tests-runner-cache-optional ()
+  (dolist (cache '(nil "C:\\cache\\tests.etr"))
+    (dolist (discover '(nil t))
+      (let ((batch (make-my-projectile-tests--batch
+                    :root default-directory :executable "tests.exe"
+                    :flags '("-disableLogs" "-disableCallstackResolution")
+                    :thread-limit 4 :filter "Fast" :exclude-slow t
+                    :cache cache :discover discover))
+            (commands nil)
+            (directories nil))
+        (cl-letf (((symbol-function 'make-temp-file)
+                   (lambda (&rest _) "C:\\temp\\test-runner\\"))
+                  ((symbol-function 'make-directory)
+                   (lambda (directory &rest _) (push directory directories)))
+                  ((symbol-function 'make-process) (lambda (&rest _) 'runner))
+                  ((symbol-function 'process-put) (lambda (&rest _) nil))
+                  ((symbol-function 'my-projectile-tests--send)
+                   (lambda (_batch &rest fields) (push fields commands))))
+          (my-projectile-tests--start-runner batch "runner.exe"))
+        (setq commands (nreverse commands))
+        (should (equal (car (last commands)) '("run")))
+        (should (member '("threads" "4") commands))
+        (should (member '("filter" "Fast") commands))
+        (should (member '("exclude-slow") commands))
+        (should (member '("arg" "-disableLogs") commands))
+        (should-not (member '("rerun-arg" "-disableLogs") commands))
+        (should (member '("rerun-arg" "-disableCallstackResolution") commands))
+        (if cache
+            (progn
+              (should (equal directories (list (file-name-directory cache))))
+              (should (member (list "cache" cache) commands))
+              (should (eq (not (null (member '("rediscover") commands))) discover)))
+          (should-not directories)
+          (should-not (assoc "cache" commands))
+          (should-not (member '("rediscover") commands)))))))
+
+(ert-deftest my-projectile-tests-fresh-results-describe-disabled-cache ()
+  (with-temp-buffer
+    (my-projectile-tests-mode)
+    (let ((batch (make-my-projectile-tests--batch
+                  :kind 'unit :buffer (current-buffer) :cpus 8
+                  :results (make-hash-table :test 'equal)
+                  :tests-done 0 :elapsed 1)))
+      (cl-letf (((symbol-function 'file-exists-p)
+                 (lambda (&rest _) (ert-fail "Fresh run inspected a cache"))))
+        (my-projectile-tests--render batch)
+        (should (string-match-p "Discovering test cases" (buffer-string)))
+        (my-projectile-tests--handle-event batch '("test" "Suite.Fast"))
+        (my-projectile-tests--handle-event batch '("discovered" "1" "1" "1" "listed" "0"))
+        (should-not (my-projectile-tests--batch-estimate batch))
+        (dolist (final '(nil t))
+          (my-projectile-tests--render batch final)
+          (should (string-match-p "Run fresh: discovered tests; round-robin scheduling"
+                                  (buffer-string)))
+          (should (string-match-p "timing cache disabled" (buffer-string)))
+          (should-not (string-match-p "recording timings\\|recorded timings\\|estimated"
+                                      (buffer-string))))))))
+
+(ert-deftest my-projectile-tests-discovery-results-describe-cache ()
+  (let ((batch (make-my-projectile-tests--batch :source "listed" :cache "timings.etr")))
+    (should (equal (my-projectile-tests--source-text batch nil)
+                   "Discovered tests; recording timings"))
+    (should-not (my-projectile-tests--source-text batch t))
+    (my-projectile-tests--handle-event batch '("cache-saved" "2" "3"))
+    (should (equal (my-projectile-tests--source-text batch t)
+                   "Discovered tests; recorded timings for 2/3 tests"))))
 
 (provide 'my-projectile-tests-tests)
 ;;; my-projectile-tests-tests.el ends here
