@@ -11,6 +11,12 @@
 ;; discovers the cases, runs them in parallel and writes each process's
 ;; output to files that Emacs reads, so the thread count is not limited by
 ;; the number of process pipes Emacs can create.
+;;
+;; Listing the tests is slow, so the runner keeps the test list and each
+;; test's duration in a timing cache per executable.  Batches normally use
+;; the cache and schedule the tests so that all threads finish together.
+;; Discovery mode (d in the settings) lists the tests again and records new
+;; durations.
 
 ;;; Code:
 
@@ -31,8 +37,12 @@
   "Last integration test command used in each project compilation directory.")
 
 (defvar my-projectile-tests-batch-settings nil
-  "Saved batch settings: :exclude-slow, :threads and :filter.
+  "Saved batch settings: :exclude-slow, :threads, :filter and :discover.
 The thread count defaults to half the available logical CPUs.")
+
+(defvar my-projectile-tests-cache-directory
+  (locate-user-emacs-file ".cache/emacs-test-runner/")
+  "Directory for the emacs-test-runner timing caches, one per executable.")
 
 (defvar my-projectile-tests-runner-program
   (expand-file-name (concat "emacs-test-runner/build/emacs-test-runner"
@@ -41,7 +51,7 @@ The thread count defaults to half the available logical CPUs.")
   "The emacs-test-runner executable used for batch tests.
 Build it as described in README.md.")
 
-(defconst my-projectile-tests--runner-protocol "1"
+(defconst my-projectile-tests--runner-protocol "2"
   "Protocol version this library expects from emacs-test-runner.")
 
 (defconst my-projectile-tests--max-threads 1024
@@ -53,6 +63,17 @@ Build it as described in README.md.")
 (defun my-projectile-tests--tnt-p (root)
   "Return non-nil if ROOT is a TnT project root."
   (string= (file-name-nondirectory (directory-file-name root)) "TnT"))
+
+(defun my-projectile-tests--cache-file (executable)
+  "Return the timing cache file for the Google Test EXECUTABLE."
+  (let ((path (expand-file-name executable)))
+    (expand-file-name
+     (format "%s-%s.etr" (file-name-nondirectory path)
+             (substring (md5 (if (memq system-type '(windows-nt ms-dos))
+                                 (downcase path)
+                               path))
+                        0 8))
+     my-projectile-tests-cache-directory)))
 
 (defun my-projectile-test-project--run (kind command-map arg)
   "Run KIND tests using COMMAND-MAP to remember the command.
@@ -92,6 +113,7 @@ With prefix ARG, force the command prompt."
 
 (cl-defstruct my-projectile-tests--batch
   kind root executable flags buffer cpus thread-limit threads exclude-slow filter
+  discover cache source cache-time estimate timed
   process pending outdir discovering tests results logs errors tests-done
   rerun-names reruns-total reruns-done start-time elapsed finished cancelled)
 
@@ -101,7 +123,8 @@ With prefix ARG, force the command prompt."
 (define-derived-mode my-projectile-tests-settings-mode special-mode "Projectile Batch Settings"
   "Major mode for choosing and launching parallel Google Test batches.
 Press s to exclude SLOW tests, t to set threads, f to set an include filter,
-or u/i to run unit/integration tests with the displayed settings.")
+d to toggle discovery mode, or u/i to run unit/integration tests with the
+displayed settings.")
 
 (defun my-projectile-tests--default-threads ()
   "Return the default number of parallel test threads."
@@ -121,6 +144,7 @@ or u/i to run unit/integration tests with the displayed settings.")
          (exclude-slow (plist-get settings :exclude-slow))
          (threads (plist-get settings :threads))
          (filter (plist-get settings :filter))
+         (discover (plist-get settings :discover))
          (thread-count (or threads (my-projectile-tests--default-threads))))
     (erase-buffer)
     (insert "  "
@@ -147,6 +171,11 @@ or u/i to run unit/integration tests with the displayed settings.")
      (if (or (null filter) (string-empty-p filter)) "all" filter)
      (if (or (null filter) (string-empty-p filter))
          'shadow 'font-lock-string-face))
+    (my-projectile-tests--insert-setting
+     "d" "Discovery mode:"
+     (if discover "ON (list tests and record timings)"
+       "OFF (use cached tests and timings)")
+     (if discover 'success 'shadow))
     (insert "\n  "
             (propertize "RUN" 'face '(:inherit font-lock-keyword-face
                                               :weight bold))
@@ -167,6 +196,17 @@ or u/i to run unit/integration tests with the displayed settings.")
   (setq my-projectile-tests-batch-settings
         (plist-put my-projectile-tests-batch-settings :exclude-slow
                    (not (plist-get my-projectile-tests-batch-settings :exclude-slow))))
+  (my-projectile-tests--render-settings))
+
+(defun my-projectile-tests--toggle-discovery ()
+  "Toggle discovery mode.
+In discovery mode a batch lists the test cases again and records how
+long each one takes.  Otherwise it uses the list and timings recorded
+by the last discovery to give every thread an equal share of work."
+  (interactive)
+  (setq my-projectile-tests-batch-settings
+        (plist-put my-projectile-tests-batch-settings :discover
+                   (not (plist-get my-projectile-tests-batch-settings :discover))))
   (my-projectile-tests--render-settings))
 
 (defun my-projectile-tests--set-threads ()
@@ -204,6 +244,7 @@ or u/i to run unit/integration tests with the displayed settings.")
 (define-key my-projectile-tests-settings-mode-map (kbd "s") #'my-projectile-tests--toggle-slow)
 (define-key my-projectile-tests-settings-mode-map (kbd "t") #'my-projectile-tests--set-threads)
 (define-key my-projectile-tests-settings-mode-map (kbd "f") #'my-projectile-tests--set-filter)
+(define-key my-projectile-tests-settings-mode-map (kbd "d") #'my-projectile-tests--toggle-discovery)
 (define-key my-projectile-tests-settings-mode-map (kbd "u") #'my-projectile-tests--run-unit)
 (define-key my-projectile-tests-settings-mode-map (kbd "i") #'my-projectile-tests--run-integration)
 (define-key my-projectile-tests-settings-mode-map (kbd "q") #'quit-window)
@@ -258,6 +299,18 @@ Press TAB or RET on a failed test to expand its rerun logs."
 
 (add-hook 'kill-emacs-hook #'my-projectile-tests--kill-runners)
 
+(defun my-projectile-tests--source-text (batch final)
+  "Describe where BATCH's test list came from; FINAL if it has finished."
+  (pcase (my-projectile-tests--batch-source batch)
+    ("cache"
+     (format "Test list and timings cached %s; press d in the batch settings to rediscover"
+             (my-projectile-tests--batch-cache-time batch)))
+    ("listed"
+     (if-let* ((timed (my-projectile-tests--batch-timed batch)))
+         (format "Discovered tests; recorded timings for %d/%d tests"
+                 (car timed) (cdr timed))
+       (unless final "Discovered tests; recording timings")))))
+
 (defun my-projectile-tests--render (batch &optional final)
   "Update BATCH's result buffer; fold failures if FINAL is non-nil."
   (when (buffer-live-p (my-projectile-tests--batch-buffer batch))
@@ -285,8 +338,12 @@ Press TAB or RET on a failed test to expand its rerun logs."
                                       failed skipped unrun)
                               'face (if (or (> failed 0) (> unrun 0)) 'warning 'shadow))))
         (when final
-          (insert (format " in %.2f seconds" (my-projectile-tests--batch-elapsed batch))))
+          (insert (format " in %.2f seconds" (my-projectile-tests--batch-elapsed batch)))
+          (when-let* ((estimate (my-projectile-tests--batch-estimate batch)))
+            (insert (propertize (format " (estimated %.2f)" estimate) 'face 'shadow))))
         (insert "\n")
+        (when-let* ((line (my-projectile-tests--source-text batch final)))
+          (insert (propertize line 'face 'shadow) "\n"))
         (if final
             (if (my-projectile-tests--batch-tests batch)
                 (insert (format "%d %s on %d logical CPUs\n"
@@ -301,10 +358,17 @@ Press TAB or RET on a failed test to expand its rerun logs."
                             (my-projectile-tests--batch-reruns-done batch)
                             (my-projectile-tests--batch-reruns-total batch)))
                    (threads
-                    (format "Running tests: %d/%d completed on %d %s\n"
+                    (format "Running tests: %d/%d completed on %d %s%s\n"
                             (my-projectile-tests--batch-tests-done batch)
                             (length (my-projectile-tests--batch-tests batch))
-                            threads (if (= threads 1) "thread" "threads")))
+                            threads (if (= threads 1) "thread" "threads")
+                            (if-let* ((estimate (my-projectile-tests--batch-estimate batch)))
+                                (format ", estimated %.1f seconds" estimate)
+                              "")))
+                   ((and (not (my-projectile-tests--batch-discover batch))
+                         (when-let* ((cache (my-projectile-tests--batch-cache batch)))
+                           (file-exists-p cache)))
+                    "Loading cached test cases...\n")
                    (t "Discovering test cases...\n"))))
         (when (and final (my-projectile-tests--batch-tests batch))
           (dolist (test (my-projectile-tests--batch-tests batch))
@@ -459,12 +523,28 @@ is the reason the runner could not start the process."
               version my-projectile-tests--runner-protocol)))
     (`("test" ,name)
      (push name (my-projectile-tests--batch-discovering batch)))
-    (`("discovered" ,_total ,_selected ,threads)
+    (`("discovered" ,_total ,_selected ,threads ,source ,estimate)
      (setf (my-projectile-tests--batch-tests batch)
            (nreverse (my-projectile-tests--batch-discovering batch))
            (my-projectile-tests--batch-discovering batch) nil
-           (my-projectile-tests--batch-threads batch) (string-to-number threads))
+           (my-projectile-tests--batch-threads batch) (string-to-number threads)
+           (my-projectile-tests--batch-source batch) source
+           (my-projectile-tests--batch-estimate batch)
+           (let ((milliseconds (string-to-number estimate)))
+             (and (> milliseconds 0) (/ milliseconds 1000.0))))
+     (when (equal source "cache")
+       (setf (my-projectile-tests--batch-cache-time batch)
+             (if-let* ((attributes (file-attributes
+                                    (my-projectile-tests--batch-cache batch))))
+                 (format-time-string "%Y-%m-%d %H:%M"
+                                     (file-attribute-modification-time attributes))
+               "at an unknown time")))
      (my-projectile-tests--render batch))
+    (`("cache-saved" ,timed ,total)
+     (setf (my-projectile-tests--batch-timed batch)
+           (cons (string-to-number timed) (string-to-number total))))
+    (`("cache-failed" ,message)
+     (push message (my-projectile-tests--batch-errors batch)))
     (`("chunk-done" ,exit ,xml ,log . ,names)
      (my-projectile-tests--chunk-finished batch names (string-to-number exit) xml log))
     (`("chunk-failed" ,message . ,names)
@@ -537,9 +617,11 @@ is the reason the runner could not start the process."
   "Start PROGRAM as BATCH's runner and send it the batch settings."
   (let ((flags (my-projectile-tests--batch-flags batch))
         (filter (my-projectile-tests--batch-filter batch))
+        (cache (my-projectile-tests--batch-cache batch))
         (default-directory (my-projectile-tests--batch-root batch)))
     (setf (my-projectile-tests--batch-outdir batch)
           (make-temp-file "emacs-test-runner-" t))
+    (make-directory (file-name-directory cache) t)
     (let ((process (make-process
                     :name "emacs-test-runner"
                     :command (list program)
@@ -564,6 +646,9 @@ is the reason the runner could not start the process."
       (my-projectile-tests--send batch "filter" filter))
     (when (my-projectile-tests--batch-exclude-slow batch)
       (my-projectile-tests--send batch "exclude-slow"))
+    (my-projectile-tests--send batch "cache" cache)
+    (when (my-projectile-tests--batch-discover batch)
+      (my-projectile-tests--send batch "rediscover"))
     (my-projectile-tests--send batch "run")))
 
 (defun my-projectile-tests--start-batch (kind root)
@@ -591,6 +676,8 @@ is the reason the runner could not start the process."
                                    (my-projectile-tests--default-threads))
                  :exclude-slow (plist-get settings :exclude-slow)
                  :filter (or (plist-get settings :filter) "")
+                 :discover (plist-get settings :discover)
+                 :cache (my-projectile-tests--cache-file executable)
                  :results (make-hash-table :test 'equal)
                  :logs (make-hash-table :test 'equal)
                  :tests-done 0)))
@@ -622,7 +709,10 @@ is the reason the runner could not start the process."
   "Open batch settings for the current project.
 Press s to exclude SLOW tests, t to choose the thread count, and f to
 include only test names containing a case-sensitive substring.  Press
-u or i to launch unit or integration tests.  Settings persist across
+d to toggle discovery mode, which lists the tests again and records how
+long each takes; other batches reuse that list and balance the tests
+across threads by their recorded durations.  Press u or i to launch
+unit or integration tests.  Settings persist across
 Emacs sessions.  Batches run through emacs-test-runner, which must be
 built first (see README.md).
 Failed cases are rerun with logging enabled; press TAB on a failure in

@@ -7,6 +7,11 @@
  * process, and redirects every child's output to a file in the output
  * directory.  Emacs therefore needs a single pipe however many tests run in
  * parallel.  Child processes are killed when the runner stops or dies.
+ *
+ * With a timing cache, discovery also records every test's duration from the
+ * Google Test XML and saves the test list and durations to the cache.  Later
+ * runs skip discovery, read the cache and balance the tests across the
+ * threads so that they all finish at about the same time.
  */
 
 #if defined(_WIN32)
@@ -23,6 +28,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #if defined(__linux__)
 #include <sys/prctl.h>
@@ -30,13 +36,14 @@
 #endif
 
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define RUNNER_NAME "emacs-test-runner"
-#define RUNNER_VERSION "1.0"
-#define PROTOCOL_VERSION "1"
+#define RUNNER_VERSION "1.1"
+#define PROTOCOL_VERSION "2"
 #define MAX_THREADS 1024u
 
 #if defined(_WIN32)
@@ -194,6 +201,7 @@ typedef struct {
   int started;
   int retryable; /* Start failed for lack of resources. */
   unsigned long exit_code;
+  uint64_t elapsed_us; /* Wall time of the last start attempt. */
   char message[512];
 } proc_result;
 
@@ -217,6 +225,7 @@ static void cond_broadcast(cond_t *cond) { WakeAllConditionVariable(cond); }
 
 static HANDLE job_handle;
 static HANDLE null_handle;
+static uint64_t counter_frequency;
 
 static wchar_t *utf8_to_wide(const char *text)
 {
@@ -324,9 +333,12 @@ static void platform_init(void)
 {
   SECURITY_ATTRIBUTES inherit = { sizeof inherit, NULL, TRUE };
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+  LARGE_INTEGER frequency;
 
   _setmode(_fileno(stdin), _O_BINARY);
   _setmode(_fileno(stdout), _O_BINARY);
+  QueryPerformanceFrequency(&frequency);
+  counter_frequency = (uint64_t)frequency.QuadPart;
 
   job_handle = CreateJobObjectW(NULL, NULL);
   if (!job_handle)
@@ -482,6 +494,45 @@ static FILE *open_for_reading(const char *path)
   FILE *file = wide ? _wfopen(wide, L"rb") : NULL;
   free(wide);
   return file;
+}
+
+static FILE *open_for_writing(const char *path)
+{
+  wchar_t *wide = utf8_to_wide(path);
+  FILE *file = wide ? _wfopen(wide, L"wb") : NULL;
+  free(wide);
+  return file;
+}
+
+/* Atomically replace TO with FROM. */
+static int replace_file(const char *from, const char *to)
+{
+  wchar_t *wide_from = utf8_to_wide(from);
+  wchar_t *wide_to = utf8_to_wide(to);
+  int ok = wide_from && wide_to
+           && MoveFileExW(wide_from, wide_to, MOVEFILE_REPLACE_EXISTING);
+  free(wide_from);
+  free(wide_to);
+  return ok;
+}
+
+static void delete_file(const char *path)
+{
+  wchar_t *wide = utf8_to_wide(path);
+  if (wide)
+    DeleteFileW(wide);
+  free(wide);
+}
+
+static uint64_t monotonic_us(void)
+{
+  LARGE_INTEGER now;
+  uint64_t ticks;
+
+  QueryPerformanceCounter(&now);
+  ticks = (uint64_t)now.QuadPart;
+  return ticks / counter_frequency * 1000000u
+         + ticks % counter_frequency * 1000000u / counter_frequency;
 }
 
 static unsigned __stdcall worker_entry(void *arg);
@@ -661,6 +712,30 @@ static FILE *open_for_reading(const char *path)
   return fopen(path, "rb");
 }
 
+static FILE *open_for_writing(const char *path)
+{
+  return fopen(path, "wb");
+}
+
+/* Atomically replace TO with FROM. */
+static int replace_file(const char *from, const char *to)
+{
+  return rename(from, to) == 0;
+}
+
+static void delete_file(const char *path)
+{
+  (void)remove(path);
+}
+
+static uint64_t monotonic_us(void)
+{
+  struct timespec now;
+
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (uint64_t)now.tv_sec * 1000000u + (uint64_t)now.tv_nsec / 1000u;
+}
+
 static void *worker_entry(void *arg);
 
 static int start_thread(void)
@@ -678,7 +753,9 @@ static int start_thread(void)
 
 #endif
 
-static char *read_file(const char *path)
+/* Read the file at PATH and NUL-terminate it.  Store its size in SIZE unless
+   SIZE is NULL. */
+static char *read_file(const char *path, size_t *size)
 {
   FILE *file = open_for_reading(path);
   strbuf contents = { 0 };
@@ -692,6 +769,8 @@ static char *read_file(const char *path)
   while ((got = fread(chunk, 1, sizeof chunk, file)) > 0)
     sb_addn(&contents, chunk, got);
   fclose(file);
+  if (size)
+    *size = contents.len;
   return contents.data;
 }
 
@@ -726,11 +805,14 @@ static void run_process_retrying(const strvec *argv, const char *cwd,
 {
   for (;;) {
     unsigned long exits;
+    uint64_t started;
 
     mutex_lock(&children.lock);
     exits = children.exits;
     mutex_unlock(&children.lock);
+    started = monotonic_us();
     run_process(argv, cwd, log_path, result);
+    result->elapsed_us = monotonic_us() - started;
     if (result->started || !result->retryable)
       return;
     mutex_lock(&children.lock);
@@ -783,10 +865,12 @@ static struct {
   char *cwd;
   char *outdir;
   char *filter;
+  char *cache;
   strvec args;
   strvec rerun_args;
   unsigned threads;
   int exclude_slow;
+  int rediscover;
 } config;
 
 /* Work queue shared by the worker threads. */
@@ -814,7 +898,9 @@ static struct {
   int quit_requested;
 } queue;
 
-static strvec selected_tests;
+static strvec all_tests;             /* Every listed test, in list order. */
+static strvec selected_tests;        /* Borrowed from all_tests. */
+static uint64_t *selected_durations; /* Parallel to selected_tests. */
 
 static void enqueue_locked(job *item)
 {
@@ -976,75 +1062,552 @@ static int is_selected(const char *name)
   return !config.filter || !*config.filter || strstr(name, config.filter) != NULL;
 }
 
-/* Split the selected tests across THREADS groups like a dealt deck of cards,
-   then cut each group into command lines that fit the platform limit.  The
-   chunks are queued round-robin, so every thread starts on its own group. */
-static void queue_chunks(unsigned threads)
+/* Name lookup into a fixed array of test names. */
+
+#define NOT_FOUND SIZE_MAX
+
+typedef struct {
+  char **names;
+  size_t *slots; /* Index into NAMES plus one, or 0 for an empty slot. */
+  size_t mask;
+} name_index;
+
+static void index_build(name_index *index, char **names, size_t count)
 {
+  size_t cap = 16;
+
+  while (cap < count * 2)
+    cap *= 2;
+  index->names = names;
+  index->mask = cap - 1;
+  index->slots = xmalloc(cap * sizeof *index->slots);
+  memset(index->slots, 0, cap * sizeof *index->slots);
+  for (size_t i = 0; i < count; ++i) {
+    size_t slot = hash_string(names[i]) & index->mask;
+    while (index->slots[slot] && strcmp(names[index->slots[slot] - 1], names[i]) != 0)
+      slot = (slot + 1) & index->mask;
+    if (!index->slots[slot])
+      index->slots[slot] = i + 1;
+  }
+}
+
+static size_t index_find(const name_index *index, const char *name)
+{
+  for (size_t slot = hash_string(name) & index->mask; index->slots[slot];
+       slot = (slot + 1) & index->mask)
+    if (strcmp(index->names[index->slots[slot] - 1], name) == 0)
+      return index->slots[slot] - 1;
+  return NOT_FOUND;
+}
+
+static void index_free(name_index *index)
+{
+  free(index->slots);
+  index->slots = NULL;
+}
+
+/* Timing cache.  The file is a cache_header followed by COUNT durations,
+   COUNT name offsets and NAMES_SIZE bytes of NUL-terminated names, so each
+   array loads with a single memcpy.  Integers use the native byte order; a
+   file from another byte order fails the version check and is rebuilt. */
+
+#define CACHE_MAGIC "ETRCACHE"
+#define CACHE_VERSION 1u
+#define CACHE_MAX_TESTS 0x1000000u
+#define DURATION_UNKNOWN UINT64_MAX
+/* Larger durations (11.5 days) are treated as corrupt. */
+#define DURATION_MAX_US 1000000000000u
+
+typedef struct {
+  char magic[8];
+  uint32_t version;
+  uint32_t count;
+  uint64_t names_size;
+  uint64_t overhead_us; /* Mean time per process outside the test bodies. */
+} cache_header;
+
+_Static_assert(sizeof(cache_header) == 32, "cache_header must not have padding");
+
+typedef struct {
+  char *data; /* The file contents; NAMES point into it. */
+  char **names;
+  uint64_t *durations;
+  size_t count;
+  uint64_t overhead_us;
+} cache_data;
+
+static void cache_free(cache_data *cache)
+{
+  free(cache->data);
+  free(cache->names);
+  free(cache->durations);
+  memset(cache, 0, sizeof *cache);
+}
+
+/* Load the cache at PATH.  Return 1 on success, 0 if the file cannot be read
+   and -1 if it is invalid. */
+static int cache_load(const char *path, cache_data *cache)
+{
+  cache_header header;
+  uint32_t *offsets = NULL;
+  size_t size = 0, count;
+  char *names;
+
+  memset(cache, 0, sizeof *cache);
+  cache->data = read_file(path, &size);
+  if (!cache->data)
+    return 0;
+  if (size < sizeof header)
+    goto invalid;
+  memcpy(&header, cache->data, sizeof header);
+  if (memcmp(header.magic, CACHE_MAGIC, sizeof header.magic) != 0
+      || header.version != CACHE_VERSION || header.count > CACHE_MAX_TESTS
+      || header.names_size > (uint64_t)size
+      || sizeof header + (uint64_t)header.count * (sizeof(uint64_t) + sizeof(uint32_t))
+             + header.names_size
+           != (uint64_t)size
+      || (header.count > 0
+          && (header.names_size == 0 || cache->data[size - 1] != '\0')))
+    goto invalid;
+
+  count = header.count;
+  names = cache->data + (size - (size_t)header.names_size);
+  cache->durations = xmalloc(count * sizeof *cache->durations);
+  memcpy(cache->durations, cache->data + sizeof header, count * sizeof *cache->durations);
+  offsets = xmalloc(count * sizeof *offsets);
+  memcpy(offsets, cache->data + sizeof header + count * sizeof *cache->durations,
+         count * sizeof *offsets);
+  cache->names = xmalloc(count * sizeof *cache->names);
+  for (size_t i = 0; i < count; ++i) {
+    if (offsets[i] >= header.names_size || names[offsets[i]] == '\0')
+      goto invalid;
+    cache->names[i] = names + offsets[i];
+    if (cache->durations[i] > DURATION_MAX_US)
+      cache->durations[i] = DURATION_UNKNOWN;
+  }
+  free(offsets);
+  cache->count = count;
+  cache->overhead_us = header.overhead_us <= DURATION_MAX_US ? header.overhead_us : 0;
+  return 1;
+
+invalid:
+  free(offsets);
+  cache_free(cache);
+  return -1;
+}
+
+/* Write COUNT NAMES and DURATIONS to the cache at PATH through a temporary
+   file, so that readers never see a partial cache. */
+static int cache_write(const char *path, char **names, const uint64_t *durations,
+                       size_t count, uint64_t overhead_us)
+{
+  cache_header header;
+  uint32_t *offsets = xmalloc(count * sizeof *offsets);
+  uint64_t names_size = 0;
+  strbuf temp = { 0 };
+  FILE *file;
+  int ok;
+
+  for (size_t i = 0; i < count; ++i) {
+    offsets[i] = (uint32_t)names_size;
+    names_size += strlen(names[i]) + 1;
+  }
+  if (count > CACHE_MAX_TESTS || names_size > UINT32_MAX) {
+    free(offsets);
+    return 0;
+  }
+  memset(&header, 0, sizeof header);
+  memcpy(header.magic, CACHE_MAGIC, sizeof header.magic);
+  header.version = CACHE_VERSION;
+  header.count = (uint32_t)count;
+  header.names_size = names_size;
+  header.overhead_us = overhead_us;
+
+  sb_add(&temp, path);
+  sb_add(&temp, ".tmp");
+  file = open_for_writing(temp.data);
+  ok = file != NULL;
+  if (ok) {
+    ok = fwrite(&header, sizeof header, 1, file) == 1
+         && fwrite(durations, sizeof *durations, count, file) == count
+         && fwrite(offsets, sizeof *offsets, count, file) == count;
+    for (size_t i = 0; ok && i < count; ++i) {
+      size_t len = strlen(names[i]) + 1;
+      ok = fwrite(names[i], 1, len, file) == len;
+    }
+    ok = fclose(file) == 0 && ok;
+    ok = ok && replace_file(temp.data, path);
+    if (!ok)
+      delete_file(temp.data);
+  }
+  sb_free(&temp);
+  free(offsets);
+  return ok;
+}
+
+/* Durations recorded while discovering with a cache. */
+
+static struct {
+  mutex_t lock;
+  int recording;
+  uint64_t *durations;  /* Parallel to all_tests. */
+  name_index index;     /* Over all_tests, while recording. */
+  uint64_t overhead_us; /* From the cache, or measured while recording. */
+  uint64_t overhead_sum;
+  uint64_t overhead_samples;
+} timing;
+
+static int xml_space(char c)
+{
+  return is_space(c) || c == '\n';
+}
+
+/* Parse the attribute at P inside a start tag into NAME and VALUE.  Return
+   the position after it, or NULL at the end of the tag. */
+static const char *xml_attribute(const char *p, const char **name, size_t *name_len,
+                                 const char **value, size_t *value_len)
+{
+  char quote;
+
+  while (xml_space(*p))
+    ++p;
+  *name = p;
+  while (*p && !xml_space(*p) && *p != '=' && *p != '>' && *p != '/')
+    ++p;
+  *name_len = (size_t)(p - *name);
+  while (xml_space(*p))
+    ++p;
+  if (*name_len == 0 || *p != '=')
+    return NULL;
+  ++p;
+  while (xml_space(*p))
+    ++p;
+  if (*p != '"' && *p != '\'')
+    return NULL;
+  quote = *p++;
+  *value = p;
+  while (*p && *p != quote)
+    ++p;
+  if (!*p)
+    return NULL;
+  *value_len = (size_t)(p - *value);
+  return p + 1;
+}
+
+static void sb_add_xml(strbuf *sb, const char *text, size_t len)
+{
+  static const struct {
+    const char *entity;
+    char c;
+  } entities[] = { { "&amp;", '&' }, { "&lt;", '<' }, { "&gt;", '>' },
+                   { "&quot;", '"' }, { "&apos;", '\'' } };
+  size_t i = 0;
+
+  while (i < len) {
+    size_t used = 0;
+    if (text[i] == '&')
+      for (size_t e = 0; e < sizeof entities / sizeof *entities && !used; ++e) {
+        size_t n = strlen(entities[e].entity);
+        if (i + n <= len && memcmp(text + i, entities[e].entity, n) == 0) {
+          sb_addc(sb, entities[e].c);
+          used = n;
+        }
+      }
+    if (!used) {
+      sb_addc(sb, text[i]);
+      used = 1;
+    }
+    i += used;
+  }
+}
+
+/* Store the duration of every known test case in Google Test XML.  Return
+   the number of cases stored and add their durations to *TOTAL_US.  The
+   caller holds timing.lock. */
+static size_t record_xml_durations(const char *xml, uint64_t *total_us)
+{
+  strbuf name = { 0 }, full = { 0 };
+  size_t found = 0;
+
+  while ((xml = strstr(xml, "<testcase")) != NULL) {
+    const char *p, *attribute, *value;
+    size_t attribute_len, value_len;
+    double seconds = -1;
+
+    xml += strlen("<testcase");
+    if (!xml_space(*xml))
+      continue;
+    sb_clear(&name);
+    sb_clear(&full);
+    for (p = xml; (p = xml_attribute(p, &attribute, &attribute_len, &value, &value_len))
+                  != NULL;) {
+      if (attribute_len == 4 && memcmp(attribute, "name", 4) == 0) {
+        sb_add_xml(&name, value, value_len);
+      } else if (attribute_len == 9 && memcmp(attribute, "classname", 9) == 0) {
+        sb_add_xml(&full, value, value_len);
+      } else if (attribute_len == 4 && memcmp(attribute, "time", 4) == 0) {
+        char *end;
+        seconds = strtod(value, &end);
+        if (end == value)
+          seconds = -1;
+      }
+    }
+    if (name.len > 0 && full.len > 0 && seconds >= 0
+        && seconds <= (double)DURATION_MAX_US / 1e6) {
+      uint64_t duration = (uint64_t)(seconds * 1e6 + 0.5);
+      size_t test;
+      sb_addc(&full, '.');
+      sb_add(&full, name.data);
+      test = index_find(&timing.index, full.data);
+      if (test != NOT_FOUND) {
+        timing.durations[test] = duration;
+        *total_us += duration;
+        ++found;
+      }
+    }
+  }
+  sb_free(&name);
+  sb_free(&full);
+  return found;
+}
+
+/* Record the durations of CHUNK's tests from its XML file and, when every
+   test reported one, the process overhead around them. */
+static void record_chunk_timings(const job *chunk, const char *xml_path,
+                                 uint64_t elapsed_us)
+{
+  char *xml = read_file(xml_path, NULL);
+  uint64_t total = 0;
+  size_t found;
+
+  if (!xml)
+    return;
+  mutex_lock(&timing.lock);
+  found = record_xml_durations(xml, &total);
+  if (found == chunk->name_count) {
+    timing.overhead_sum += elapsed_us > total ? elapsed_us - total : 0;
+    ++timing.overhead_samples;
+  }
+  mutex_unlock(&timing.lock);
+  free(xml);
+}
+
+/* Save the recorded timings, then report that the run has finished. */
+static void finish_run(void)
+{
+  if (timing.recording) {
+    strbuf line = { 0 };
+    size_t timed = 0;
+
+    mutex_lock(&timing.lock);
+    if (timing.overhead_samples > 0)
+      timing.overhead_us = timing.overhead_sum / timing.overhead_samples;
+    for (size_t i = 0; i < all_tests.count; ++i)
+      if (timing.durations[i] != DURATION_UNKNOWN)
+        ++timed;
+    if (cache_write(config.cache, all_tests.items, timing.durations, all_tests.count,
+                    timing.overhead_us)) {
+      sb_addf(&line, "cache-saved\t%lu\t%lu", (unsigned long)timed,
+              (unsigned long)all_tests.count);
+    } else {
+      strbuf message = { 0 };
+      sb_addf(&message, "Could not write the timing cache %s", config.cache);
+      sb_add(&line, "cache-failed");
+      sb_add_field(&line, message.data);
+      sb_free(&message);
+    }
+    mutex_unlock(&timing.lock);
+    emit(&line);
+    sb_free(&line);
+  }
+  emit_simple("run-finished", NULL);
+}
+
+/* Scheduling. */
+
+typedef struct {
+  job **jobs; /* In queue order. */
+  size_t count;
+  uint64_t estimate_us; /* Expected time of the slowest thread, or 0. */
+} chunk_plan;
+
+typedef struct {
+  uint64_t cost;
+  size_t test;
+} weighted_test;
+
+static int compare_weighted(const void *a, const void *b)
+{
+  const weighted_test *x = a, *y = b;
+
+  if (x->cost != y->cost)
+    return x->cost > y->cost ? -1 : 1;
+  return x->test < y->test ? -1 : x->test > y->test;
+}
+
+/* Assign every selected test to one of THREADS groups in GROUP_OF and store
+   its expected duration in EXPECTED.  Without durations, deal the tests like
+   a deck of cards.  With durations, place the longest remaining test on the
+   least loaded group, so that the groups take about equally long.  Unknown
+   durations count as the mean known one, and each test also carries the
+   process overhead in proportion to its share of a command line of CAPACITY
+   characters.  Return non-zero if durations were used. */
+static int assign_groups(unsigned threads, size_t capacity, unsigned *group_of,
+                         uint64_t *expected)
+{
+  size_t count = selected_tests.count, known = 0;
+  uint64_t known_sum = 0, guess, *loads;
+  size_t *sizes;
+  weighted_test *order;
+
+  for (size_t i = 0; i < count; ++i)
+    if (selected_durations[i] != DURATION_UNKNOWN) {
+      known_sum += selected_durations[i];
+      ++known;
+    }
+  if (known == 0) {
+    for (size_t i = 0; i < count; ++i)
+      group_of[i] = (unsigned)(i % threads);
+    return 0;
+  }
+
+  guess = known_sum / known;
+  order = xmalloc(count * sizeof *order);
+  for (size_t i = 0; i < count; ++i) {
+    expected[i] = selected_durations[i] != DURATION_UNKNOWN ? selected_durations[i] : guess;
+    order[i].cost = expected[i]
+                    + timing.overhead_us * (strlen(selected_tests.items[i]) + 1) / capacity;
+    order[i].test = i;
+  }
+  qsort(order, count, sizeof *order, compare_weighted);
+
+  loads = xmalloc(threads * sizeof *loads);
+  sizes = xmalloc(threads * sizeof *sizes);
+  memset(loads, 0, threads * sizeof *loads);
+  memset(sizes, 0, threads * sizeof *sizes);
+  for (size_t k = 0; k < count; ++k) {
+    unsigned best = 0;
+    for (unsigned g = 1; g < threads; ++g)
+      if (loads[g] < loads[best] || (loads[g] == loads[best] && sizes[g] < sizes[best]))
+        best = g;
+    group_of[order[k].test] = best;
+    loads[best] += order[k].cost;
+    ++sizes[best];
+  }
+  free(order);
+  free(loads);
+  free(sizes);
+  return 1;
+}
+
+/* Split the selected tests into THREADS groups, then cut each group into
+   command lines that fit the platform limit.  The chunks are queued
+   round-robin, so every thread starts on its own group. */
+static void plan_chunks(unsigned threads, chunk_plan *plan)
+{
+  size_t count = selected_tests.count, rounds = 0;
   size_t base = strlen(config.exe) + 3 + strlen("--gtest_filter=") + 3
                 + strlen("--gtest_output=xml:") + strlen(config.outdir) + 48;
-  size_t rounds = 0, total = 0;
+  size_t capacity;
+  unsigned *group_of = xmalloc(count * sizeof *group_of);
+  uint64_t *expected = xmalloc(count * sizeof *expected);
+  uint64_t *work = xmalloc(threads * sizeof *work);
+  size_t *start = xmalloc(((size_t)threads + 1) * sizeof *start);
+  size_t *next = xmalloc(threads * sizeof *next);
+  /* NAMES stays alive for the process lifetime; chunks borrow from it. */
+  char **names = xmalloc(count * sizeof *names);
   job ***chunks = xmalloc(threads * sizeof *chunks);
   size_t *chunk_counts = xmalloc(threads * sizeof *chunk_counts);
+  int timed;
 
   for (size_t i = 0; i < config.args.count; ++i)
     base += strlen(config.args.items[i]) + 3;
+  capacity = base < COMMAND_LINE_LIMIT ? COMMAND_LINE_LIMIT - base : 1;
+  timed = assign_groups(threads, capacity, group_of, expected);
 
+  memset(work, 0, threads * sizeof *work);
+  memset(start, 0, ((size_t)threads + 1) * sizeof *start);
+  for (size_t i = 0; i < count; ++i) {
+    ++start[group_of[i] + 1];
+    if (timed)
+      work[group_of[i]] += expected[i];
+  }
   for (unsigned g = 0; g < threads; ++g) {
-    /* NAMES stays alive for the process lifetime; chunks borrow from it. */
-    char **names = xmalloc((selected_tests.count / threads + 1) * sizeof *names);
-    size_t count = 0, start = 0, length = 0;
+    start[g + 1] += start[g];
+    next[g] = start[g];
+  }
+  for (size_t i = 0; i < count; ++i)
+    names[next[group_of[i]]++] = selected_tests.items[i];
+
+  memset(plan, 0, sizeof *plan);
+  for (unsigned g = 0; g < threads; ++g) {
+    size_t end = start[g + 1], from = start[g], length = 0;
 
     chunks[g] = NULL;
     chunk_counts[g] = 0;
-    for (size_t i = g; i < selected_tests.count; i += threads)
-      names[count++] = selected_tests.items[i];
-    for (size_t i = 0; i <= count; ++i) {
-      size_t add = i < count ? strlen(names[i]) + 1 : 0;
-      if (i == count || (i > start && base + length + add > COMMAND_LINE_LIMIT)) {
-        if (i > start) {
+    for (size_t i = from; i <= end; ++i) {
+      size_t add = i < end ? strlen(names[i]) + 1 : 0;
+      if (i == end || (i > from && base + length + add > COMMAND_LINE_LIMIT)) {
+        if (i > from) {
           job *chunk = new_job(JOB_CHUNK);
-          chunk->names = names + start;
-          chunk->name_count = i - start;
+          chunk->names = names + from;
+          chunk->name_count = i - from;
           chunks[g] = xrealloc(chunks[g], (chunk_counts[g] + 1) * sizeof *chunks[g]);
           chunks[g][chunk_counts[g]++] = chunk;
-          ++total;
+          ++plan->count;
         }
-        start = i;
+        from = i;
         length = 0;
       }
       length += add;
     }
     if (chunk_counts[g] > rounds)
       rounds = chunk_counts[g];
-    if (count == 0)
-      free(names);
+    if (timed && work[g] + timing.overhead_us * chunk_counts[g] > plan->estimate_us)
+      plan->estimate_us = work[g] + timing.overhead_us * chunk_counts[g];
   }
 
-  mutex_lock(&queue.lock);
-  queue.chunks_left = total;
+  plan->jobs = xmalloc(plan->count * sizeof *plan->jobs);
+  plan->count = 0;
   for (size_t r = 0; r < rounds; ++r)
     for (unsigned g = 0; g < threads; ++g)
       if (r < chunk_counts[g])
-        enqueue_locked(chunks[g][r]);
-  cond_broadcast(&queue.changed);
-  mutex_unlock(&queue.lock);
+        plan->jobs[plan->count++] = chunks[g][r];
 
   for (unsigned g = 0; g < threads; ++g)
     free(chunks[g]);
   free(chunks);
   free(chunk_counts);
+  free(group_of);
+  free(expected);
+  free(work);
+  free(start);
+  free(next);
 }
 
-static void run_discovery(void)
+static void enqueue_plan(chunk_plan *plan)
+{
+  mutex_lock(&queue.lock);
+  queue.chunks_left = plan->count;
+  for (size_t i = 0; i < plan->count; ++i)
+    enqueue_locked(plan->jobs[i]);
+  cond_broadcast(&queue.changed);
+  mutex_unlock(&queue.lock);
+  free(plan->jobs);
+  plan->jobs = NULL;
+}
+
+/* Discovery. */
+
+/* List the tests of the executable into all_tests.  Return 0 after
+   reporting a failure. */
+static int list_tests(void)
 {
   strvec argv = { 0 };
-  strvec discovered = { 0 };
   char *log = output_path("discover", 0, ".log");
   char *output;
   proc_result result;
   strbuf line = { 0 };
-  unsigned workers;
 
   base_argv(&argv, &config.args);
   sv_push(&argv, xstrdup("--gtest_list_tests"));
@@ -1056,48 +1619,115 @@ static void run_discovery(void)
     sb_add_field(&line, result.message);
     sb_add_field(&line, "");
     emit(&line);
-    goto done;
+  } else {
+    output = read_file(log, NULL);
+    if (output && result.exit_code == 0)
+      parse_test_list(output, &all_tests);
+    free(output);
+    if (all_tests.count == 0) {
+      sb_add(&line, "discover-failed");
+      if (result.exit_code != 0)
+        sb_addf(&line, "\tExited with status %lu", result.exit_code);
+      else
+        sb_add(&line, "\tNo test cases were listed");
+      sb_add_field(&line, log);
+      emit(&line);
+    }
   }
-  output = read_file(log);
-  if (output && result.exit_code == 0)
-    parse_test_list(output, &discovered);
-  free(output);
-  if (discovered.count == 0) {
-    sb_add(&line, "discover-failed");
-    if (result.exit_code != 0)
-      sb_addf(&line, "\tExited with status %lu", result.exit_code);
-    else
-      sb_add(&line, "\tNo test cases were listed");
-    sb_add_field(&line, log);
-    emit(&line);
-    goto done;
+  sb_free(&line);
+  free(log);
+  return all_tests.count > 0;
+}
+
+/* Fill all_tests and timing from the cache or, when rediscovering or
+   without a usable cache, by listing the tests.  Return the source of the
+   list, or NULL after reporting a failure. */
+static const char *load_tests(void)
+{
+  cache_data cache = { 0 };
+  int loaded = 0;
+
+  if (config.cache) {
+    loaded = cache_load(config.cache, &cache);
+    if (loaded < 0) {
+      strbuf line = { 0 }, message = { 0 };
+      sb_addf(&message, "Ignoring invalid timing cache %s", config.cache);
+      sb_add(&line, "cache-failed");
+      sb_add_field(&line, message.data);
+      emit(&line);
+      sb_free(&line);
+      sb_free(&message);
+    }
+  }
+  if (loaded > 0 && !config.rediscover) {
+    /* The names point into the cache contents, which stay loaded. */
+    all_tests.items = cache.names;
+    all_tests.count = all_tests.cap = cache.count;
+    timing.durations = cache.durations;
+    timing.overhead_us = cache.overhead_us;
+    return "cache";
   }
 
-  for (size_t i = 0; i < discovered.count; ++i) {
-    if (is_selected(discovered.items[i])) {
-      sv_push(&selected_tests, discovered.items[i]);
+  if (!list_tests()) {
+    if (loaded > 0)
+      cache_free(&cache);
+    return NULL;
+  }
+  timing.durations = xmalloc(all_tests.count * sizeof *timing.durations);
+  for (size_t i = 0; i < all_tests.count; ++i)
+    timing.durations[i] = DURATION_UNKNOWN;
+  if (loaded > 0) {
+    /* Keep the old durations until new ones are measured. */
+    name_index old;
+    index_build(&old, cache.names, cache.count);
+    for (size_t i = 0; i < all_tests.count; ++i) {
+      size_t found = index_find(&old, all_tests.items[i]);
+      if (found != NOT_FOUND)
+        timing.durations[i] = cache.durations[found];
+    }
+    timing.overhead_us = cache.overhead_us;
+    index_free(&old);
+    cache_free(&cache);
+  }
+  if (config.cache) {
+    index_build(&timing.index, all_tests.items, all_tests.count);
+    timing.recording = 1;
+  }
+  return "listed";
+}
+
+static void run_discovery(void)
+{
+  const char *source = load_tests();
+  strbuf line = { 0 };
+  chunk_plan plan = { 0 };
+  unsigned workers;
+
+  if (!source)
+    return;
+  selected_durations = xmalloc(all_tests.count * sizeof *selected_durations);
+  for (size_t i = 0; i < all_tests.count; ++i) {
+    if (is_selected(all_tests.items[i])) {
+      selected_durations[selected_tests.count] = timing.durations[i];
+      sv_push(&selected_tests, all_tests.items[i]);
       sb_add(&line, "test");
-      sb_add_field(&line, discovered.items[i]);
+      sb_add_field(&line, all_tests.items[i]);
       emit(&line);
-    } else {
-      free(discovered.items[i]);
     }
   }
   workers = selected_tests.count < config.threads ? (unsigned)selected_tests.count
                                                   : config.threads;
-  sb_addf(&line, "discovered\t%lu\t%lu\t%u", (unsigned long)discovered.count,
-          (unsigned long)selected_tests.count, workers);
+  if (workers > 0)
+    plan_chunks(workers, &plan);
+  sb_addf(&line, "discovered\t%lu\t%lu\t%u\t%s\t%llu", (unsigned long)all_tests.count,
+          (unsigned long)selected_tests.count, workers, source,
+          (unsigned long long)(plan.estimate_us / 1000u));
   emit(&line);
   if (workers == 0)
-    emit_simple("run-finished", NULL);
+    finish_run();
   else
-    queue_chunks(workers);
-
-done:
-  /* Selected names now belong to selected_tests. */
-  free(discovered.items);
+    enqueue_plan(&plan);
   sb_free(&line);
-  free(log);
 }
 
 static void run_chunk(const job *chunk)
@@ -1123,6 +1753,8 @@ static void run_chunk(const job *chunk)
   sb_clear(&line);
   run_process_retrying(&argv, config.cwd, log, &result);
   sv_free_items(&argv);
+  if (result.started && timing.recording)
+    record_chunk_timings(chunk, xml, result.elapsed_us);
 
   if (result.started) {
     sb_addf(&line, "chunk-done\t%lu", result.exit_code);
@@ -1140,7 +1772,7 @@ static void run_chunk(const job *chunk)
   last = --queue.chunks_left == 0;
   mutex_unlock(&queue.lock);
   if (last)
-    emit_simple("run-finished", NULL);
+    finish_run();
   sb_free(&line);
   free(xml);
   free(log);
@@ -1289,7 +1921,9 @@ static void handle_command(char **fields, size_t count)
                     || strcmp(command, "outdir") == 0 || strcmp(command, "arg") == 0
                     || strcmp(command, "rerun-arg") == 0 || strcmp(command, "threads") == 0
                     || strcmp(command, "filter") == 0
-                    || strcmp(command, "exclude-slow") == 0;
+                    || strcmp(command, "exclude-slow") == 0
+                    || strcmp(command, "cache") == 0
+                    || strcmp(command, "rediscover") == 0;
   strbuf message = { 0 };
 
   if (configuring && queue.started) {
@@ -1297,6 +1931,8 @@ static void handle_command(char **fields, size_t count)
     emit_error(message.data);
   } else if (strcmp(command, "exclude-slow") == 0 && count == 1) {
     config.exclude_slow = 1;
+  } else if (strcmp(command, "rediscover") == 0 && count == 1) {
+    config.rediscover = 1;
   } else if (configuring && count == 2) {
     const char *value = fields[1];
     if (strcmp(command, "exe") == 0) {
@@ -1305,6 +1941,8 @@ static void handle_command(char **fields, size_t count)
       set_string(&config.cwd, value, 1);
     } else if (strcmp(command, "outdir") == 0) {
       set_string(&config.outdir, value, 1);
+    } else if (strcmp(command, "cache") == 0) {
+      set_string(&config.cache, value, 1);
     } else if (strcmp(command, "filter") == 0) {
       set_string(&config.filter, value, 0);
     } else if (strcmp(command, "arg") == 0) {
@@ -1401,6 +2039,7 @@ int main(int argc, char **argv)
   cond_init(&children.exited);
   mutex_init(&queue.lock);
   cond_init(&queue.changed);
+  mutex_init(&timing.lock);
   config.threads = 1;
 
   sb_add(&line, "hello\t" RUNNER_NAME "\t" PROTOCOL_VERSION);
