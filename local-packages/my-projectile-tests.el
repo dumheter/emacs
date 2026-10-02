@@ -158,8 +158,8 @@ displayed settings.")
                                                    :weight bold))
             "\n")
     (my-projectile-tests--insert-setting
-     "s" "Exclude SLOW tests:"
-     (if exclude-slow "ON" "OFF")
+     "s" "SLOW tests:"
+     (if exclude-slow "EXCLUDE" "INCLUDE")
      (if exclude-slow 'success 'shadow))
     (my-projectile-tests--insert-setting
      "t" "Threads:"
