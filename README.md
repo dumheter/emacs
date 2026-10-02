@@ -127,6 +127,11 @@ breadcrumbs.
   Outside TnT it prompts for the Google Test executable. Failed tests are
   rerun with logging; press `TAB` on a failure to expand its log. Killing the result
   buffer stops the batch.
+- Settings values are muted at their defaults; active overrides use the
+  theme's warning color. An explicit thread count equal to the automatic
+  default stays muted, as does discovery mode when **Run without cache**
+  overrides it. The TnT disable flags are muted when enabled (their default)
+  and highlighted when disabled.
 - **Google Test repeat** passes `--gtest_repeat=N` to each test process and
   diagnostic rerun, repeating its selected cases sequentially inside that
   process. **Parallel repeat** schedules N independent iterations of every

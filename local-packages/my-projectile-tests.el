@@ -135,7 +135,9 @@ d to toggle discovery mode, r to toggle runs without cache, l/c to toggle
 TnT's disableLogs/disableCallstackResolution flags, or u/i to run
 unit/integration tests with the displayed settings.
 Press g to set --gtest_repeat within each process, or p to set independent
-parallel repeats of each selected test.")
+parallel repeats of each selected test.
+Default values are muted; active non-default values use the theme's
+warning face.")
 
 (defun my-projectile-tests--setting (key &optional default)
   "Return saved batch setting KEY, or DEFAULT if KEY has no saved value."
@@ -147,12 +149,14 @@ parallel repeats of each selected test.")
   "Return the default number of parallel test threads."
   (max 1 (/ (1+ (num-processors)) 2)))
 
-(defun my-projectile-tests--insert-setting (key label value value-face)
-  "Insert a settings row with KEY, LABEL, VALUE and VALUE-FACE."
+(defun my-projectile-tests--insert-setting (key label value non-default)
+  "Insert a settings row with KEY, LABEL and VALUE.
+Highlight VALUE with the theme's warning face when NON-DEFAULT is non-nil;
+otherwise use the muted shadow face."
   (insert "  " (propertize (format "[%s]" key)
                           'face '(:inherit font-lock-keyword-face :weight bold))
           "  " (format "%-29s" label)
-          (propertize value 'face value-face) "\n"))
+          (propertize value 'face (if non-default 'warning 'shadow)) "\n"))
 
 (defun my-projectile-tests--render-settings ()
   "Show the current batch settings in the settings buffer."
@@ -168,7 +172,8 @@ parallel repeats of each selected test.")
           (my-projectile-tests--setting :disable-callstack-resolution t))
          (gtest-repeat (my-projectile-tests--setting :gtest-repeat 1))
          (repeat (my-projectile-tests--setting :repeat 1))
-         (thread-count (or threads (my-projectile-tests--default-threads))))
+         (default-threads (my-projectile-tests--default-threads))
+         (thread-count (or threads default-threads)))
     (erase-buffer)
     (insert "  "
             (propertize "PROJECTILE  /  TEST RUNNER"
@@ -183,43 +188,42 @@ parallel repeats of each selected test.")
     (my-projectile-tests--insert-setting
      "s" "SLOW tests:"
      (if exclude-slow "EXCLUDE" "INCLUDE")
-     (if exclude-slow 'success 'shadow))
+     exclude-slow)
     (my-projectile-tests--insert-setting
      "t" "Threads:"
      (if threads (number-to-string threads)
        (format "auto (%d)" thread-count))
-     'font-lock-constant-face)
+     (/= thread-count default-threads))
     (my-projectile-tests--insert-setting
      "f" "Include tests containing:"
      (if (or (null filter) (string-empty-p filter)) "all" filter)
-     (if (or (null filter) (string-empty-p filter))
-         'shadow 'font-lock-string-face))
+     (and filter (not (string-empty-p filter))))
     (my-projectile-tests--insert-setting
      "g" "Google Test repeat:"
      (format "%d (within each process)" gtest-repeat)
-     'font-lock-constant-face)
+     (/= gtest-repeat 1))
     (my-projectile-tests--insert-setting
      "p" "Parallel repeat:"
      (format "%d (per test, across threads)" repeat)
-     'font-lock-constant-face)
+     (/= repeat 1))
     (my-projectile-tests--insert-setting
      "d" "Discovery mode:"
      (cond (fresh "IGNORED (run without cache is ON)")
            (discover "ON (list tests and record timings)")
            (t "OFF (use cached tests and timings)"))
-     (if (and discover (not fresh)) 'success 'shadow))
+     (and discover (not fresh)))
     (my-projectile-tests--insert-setting
      "r" "Run without cache:"
      (if fresh "ON (discover; no cache or timings)" "OFF")
-     (if fresh 'success 'shadow))
+     fresh)
     (my-projectile-tests--insert-setting
      "l" "disableLogs:"
      (if disable-logs "ON (TnT only)" "OFF")
-     (if disable-logs 'success 'shadow))
+     (not disable-logs))
     (my-projectile-tests--insert-setting
      "c" "disableCallstackResolution:"
      (if disable-callstack-resolution "ON (TnT only)" "OFF")
-     (if disable-callstack-resolution 'success 'shadow))
+     (not disable-callstack-resolution))
     (insert "\n  "
             (propertize "RUN" 'face '(:inherit font-lock-keyword-face
                                               :weight bold))

@@ -52,6 +52,36 @@
         (should-error (my-projectile-tests--set-threads) :type 'user-error))
       (should (= (plist-get my-projectile-tests-batch-settings :threads) 3)))))
 
+(ert-deftest my-projectile-tests-settings-highlight-only-active-overrides ()
+  (cl-letf (((symbol-function 'num-processors) (lambda () 8)))
+    (dolist (case
+             '((nil nil)
+               ((:exclude-slow nil :threads 4 :filter "" :discover nil
+                 :fresh nil :disable-logs t :disable-callstack-resolution t
+                 :gtest-repeat 1 :repeat 1)
+                nil)
+               ((:exclude-slow t :threads 3 :filter "Fast" :discover t
+                 :disable-logs nil :disable-callstack-resolution nil
+                 :gtest-repeat 2 :repeat 3)
+                ("s" "t" "f" "g" "p" "d" "l" "c"))
+               ((:threads 5) ("t"))
+               ((:fresh t :discover t) ("r"))
+               ((:fresh t :discover nil) ("r"))))
+      (let ((my-projectile-tests-batch-settings (car case))
+            (warning-keys (cadr case))
+            (rows 0))
+        (with-temp-buffer
+          (my-projectile-tests-settings-mode)
+          (setq my-projectile-tests--project-root "C:\\src\\TnT\\")
+          (my-projectile-tests--render-settings)
+          (while (re-search-forward "^  \\[\\([stfgpdrlc]\\)\\]  " nil t)
+            (let ((key (match-string 1)))
+              (forward-char 29)
+              (should (eq (get-text-property (point) 'face)
+                          (if (member key warning-keys) 'warning 'shadow)))
+              (setq rows (1+ rows))))
+          (should (= rows 9)))))))
+
 (ert-deftest my-projectile-tests-warns-on-high-windows-thread-count ()
   (let ((my-projectile-tests-batch-settings '(:threads 30)))
     (with-temp-buffer
