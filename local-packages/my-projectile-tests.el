@@ -38,8 +38,10 @@
   "Last integration test command used in each project compilation directory.")
 
 (defvar my-projectile-tests-batch-settings nil
-  "Saved batch settings: :exclude-slow, :threads, :filter, :discover and :fresh.
-The thread count defaults to half the available logical CPUs.")
+  "Saved batch settings: :exclude-slow, :threads, :filter, :discover, :fresh,
+:disable-logs and :disable-callstack-resolution.
+The thread count defaults to half the available logical CPUs.
+Both TnT disable flags default to enabled when their settings are absent.")
 
 (defvar my-projectile-tests-cache-directory
   (locate-user-emacs-file ".cache/emacs-test-runner/")
@@ -124,8 +126,15 @@ With prefix ARG, force the command prompt."
 (define-derived-mode my-projectile-tests-settings-mode special-mode "Projectile Batch Settings"
   "Major mode for choosing and launching parallel Google Test batches.
 Press s to exclude SLOW tests, t to set threads, f to set an include filter,
-d to toggle discovery mode, r to toggle runs without cache, or u/i to
-run unit/integration tests with the displayed settings.")
+d to toggle discovery mode, r to toggle runs without cache, l/c to toggle
+TnT's disableLogs/disableCallstackResolution flags, or u/i to run
+unit/integration tests with the displayed settings.")
+
+(defun my-projectile-tests--setting (key &optional default)
+  "Return saved batch setting KEY, or DEFAULT if KEY has no saved value."
+  (if (plist-member my-projectile-tests-batch-settings key)
+      (plist-get my-projectile-tests-batch-settings key)
+    default))
 
 (defun my-projectile-tests--default-threads ()
   "Return the default number of parallel test threads."
@@ -147,6 +156,9 @@ run unit/integration tests with the displayed settings.")
          (filter (plist-get settings :filter))
          (discover (plist-get settings :discover))
          (fresh (plist-get settings :fresh))
+         (disable-logs (my-projectile-tests--setting :disable-logs t))
+         (disable-callstack-resolution
+          (my-projectile-tests--setting :disable-callstack-resolution t))
          (thread-count (or threads (my-projectile-tests--default-threads))))
     (erase-buffer)
     (insert "  "
@@ -183,6 +195,14 @@ run unit/integration tests with the displayed settings.")
      "r" "Run without cache:"
      (if fresh "ON (discover; no cache or timings)" "OFF")
      (if fresh 'success 'shadow))
+    (my-projectile-tests--insert-setting
+     "l" "disableLogs:"
+     (if disable-logs "ON (TnT only)" "OFF")
+     (if disable-logs 'success 'shadow))
+    (my-projectile-tests--insert-setting
+     "c" "disableCallstackResolution:"
+     (if disable-callstack-resolution "ON (TnT only)" "OFF")
+     (if disable-callstack-resolution 'success 'shadow))
     (insert "\n  "
             (propertize "RUN" 'face '(:inherit font-lock-keyword-face
                                               :weight bold))
@@ -227,6 +247,23 @@ This overrides discovery mode while enabled."
                    (not (plist-get my-projectile-tests-batch-settings :fresh))))
   (my-projectile-tests--render-settings))
 
+(defun my-projectile-tests--toggle-disable-logs ()
+  "Toggle TnT's disableLogs flag for batches.
+Failed tests are still rerun with logging enabled."
+  (interactive)
+  (setq my-projectile-tests-batch-settings
+        (plist-put my-projectile-tests-batch-settings :disable-logs
+                   (not (my-projectile-tests--setting :disable-logs t))))
+  (my-projectile-tests--render-settings))
+
+(defun my-projectile-tests--toggle-disable-callstack-resolution ()
+  "Toggle TnT's disableCallstackResolution flag for batches and reruns."
+  (interactive)
+  (setq my-projectile-tests-batch-settings
+        (plist-put my-projectile-tests-batch-settings :disable-callstack-resolution
+                   (not (my-projectile-tests--setting :disable-callstack-resolution t))))
+  (my-projectile-tests--render-settings))
+
 (defun my-projectile-tests--set-threads ()
   "Set the number of threads used for a batch run."
   (interactive)
@@ -264,6 +301,8 @@ This overrides discovery mode while enabled."
 (define-key my-projectile-tests-settings-mode-map (kbd "f") #'my-projectile-tests--set-filter)
 (define-key my-projectile-tests-settings-mode-map (kbd "d") #'my-projectile-tests--toggle-discovery)
 (define-key my-projectile-tests-settings-mode-map (kbd "r") #'my-projectile-tests--toggle-fresh)
+(define-key my-projectile-tests-settings-mode-map (kbd "l") #'my-projectile-tests--toggle-disable-logs)
+(define-key my-projectile-tests-settings-mode-map (kbd "c") #'my-projectile-tests--toggle-disable-callstack-resolution)
 (define-key my-projectile-tests-settings-mode-map (kbd "u") #'my-projectile-tests--run-unit)
 (define-key my-projectile-tests-settings-mode-map (kbd "i") #'my-projectile-tests--run-integration)
 (define-key my-projectile-tests-settings-mode-map (kbd "q") #'quit-window)
@@ -697,7 +736,12 @@ is the reason the runner could not start the process."
          (buffer (get-buffer-create (format "*Projectile %s batch tests*" kind)))
          (batch (make-my-projectile-tests--batch
                  :kind kind :root root :executable executable
-                 :flags (when tnt '("-disableLogs" "-disableCallstackResolution"))
+                 :flags (when tnt
+                          (append
+                           (when (my-projectile-tests--setting :disable-logs t)
+                             '("-disableLogs"))
+                           (when (my-projectile-tests--setting :disable-callstack-resolution t)
+                             '("-disableCallstackResolution"))))
                  :buffer buffer :cpus (num-processors)
                  :thread-limit (or (plist-get settings :threads)
                                    (my-projectile-tests--default-threads))
@@ -742,8 +786,9 @@ across threads by their recorded durations.  Press u or i to launch
 unit or integration tests.  Press r to toggle run without cache: always discover
 tests and distribute them round-robin without reading or writing a
 timing cache.  Run without cache overrides discovery mode.  Settings persist across
-Emacs sessions.  Batches run through emacs-test-runner, which must be
-built first (see README.md).
+Emacs sessions.  Press l or c to toggle TnT's disableLogs or
+disableCallstackResolution flag; both default to enabled.
+Batches run through emacs-test-runner, which must be built first (see README.md).
 Failed cases are rerun with logging enabled; press TAB on a failure in
 the result buffer to inspect its logs.
 When called with KIND from Lisp, run that kind directly."

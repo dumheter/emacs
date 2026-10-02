@@ -119,9 +119,11 @@ breadcrumbs.
   prompt for a command, prefilled with the matching executable in TnT.
 - `C-c p c b` opens the batch settings: `s` excludes SLOW tests, `t` sets the
   thread count (default: half the logical CPUs), `f` sets a name filter, `d`
-  toggles discovery mode, `r` toggles **Run without cache**, and `u`/`i` run
-  unit/integration tests. Outside TnT
-  it prompts for the Google Test executable. Failed tests are rerun with
+  toggles discovery mode, `r` toggles **Run without cache**, `l`/`c` toggle
+  `disableLogs`/`disableCallstackResolution`, and `u`/`i` run
+  unit/integration tests. Both disable flags default to enabled, apply only
+  to TnT batches, and are saved across Emacs sessions with the other settings.
+  Outside TnT it prompts for the Google Test executable. Failed tests are rerun with
   logging; press `TAB` on a failure to expand its log. Killing the result
   buffer stops the batch.
 - Listing the tests is slow, so batches normally reuse the cached test list
