@@ -163,5 +163,17 @@
                          '(:exclude-slow t :threads 3 :filter "Fast"))))
       (delete-file savehist-file))))
 
+(ert-deftest my-projectile-tests-cached-timings-refreshed ()
+  (let ((batch (make-my-projectile-tests--batch
+                :source "cache" :cache-time "2026-10-02 09:38")))
+    (should-not (string-match-p "updated timing cache"
+                                (my-projectile-tests--source-text batch nil)))
+    (my-projectile-tests--handle-event batch '("cache-saved" "3022" "3030"))
+    (should (equal (my-projectile-tests--batch-timed batch) '(3022 . 3030)))
+    (should (string-match-p "updated timing cache (3022/3030 timed)"
+                            (my-projectile-tests--source-text batch t)))
+    (should (string-match-p "press d"
+                            (my-projectile-tests--source-text batch t)))))
+
 (provide 'my-projectile-tests-tests)
 ;;; my-projectile-tests-tests.el ends here

@@ -8,10 +8,9 @@
  * directory.  Emacs therefore needs a single pipe however many tests run in
  * parallel.  Child processes are killed when the runner stops or dies.
  *
- * With a timing cache, discovery also records every test's duration from the
- * Google Test XML and saves the test list and durations to the cache.  Later
- * runs skip discovery, read the cache and balance the tests across the
- * threads so that they all finish at about the same time.
+ * With a timing cache, runs record every test's duration from the Google Test
+ * XML and save the test list and durations to the cache.  Later runs skip
+ * discovery, read the cache and balance the tests across the threads.
  */
 
 #if defined(_WIN32)
@@ -42,8 +41,8 @@
 #include <string.h>
 
 #define RUNNER_NAME "emacs-test-runner"
-#define RUNNER_VERSION "1.1"
-#define PROTOCOL_VERSION "2"
+#define RUNNER_VERSION "1.2"
+#define PROTOCOL_VERSION "3"
 #define MAX_THREADS 1024u
 
 #if defined(_WIN32)
@@ -883,6 +882,7 @@ typedef struct job {
   char *rerun_id;
   char **names; /* Borrowed from selected_tests, except for reruns. */
   size_t name_count;
+  uint64_t expected_us;
   struct job *next;
 } job;
 
@@ -1245,7 +1245,7 @@ static int cache_write(const char *path, char **names, const uint64_t *durations
   return ok;
 }
 
-/* Durations recorded while discovering with a cache. */
+/* Durations recorded while running with a cache. */
 
 static struct {
   mutex_t lock;
@@ -1445,6 +1445,15 @@ static int compare_weighted(const void *a, const void *b)
   return x->test < y->test ? -1 : x->test > y->test;
 }
 
+static int compare_jobs(const void *a, const void *b)
+{
+  const job *x = *(job *const *)a, *y = *(job *const *)b;
+
+  if (x->expected_us != y->expected_us)
+    return x->expected_us > y->expected_us ? -1 : 1;
+  return strcmp(x->names[0], y->names[0]);
+}
+
 /* Assign every selected test to one of THREADS groups in GROUP_OF and store
    its expected duration in EXPECTED.  Without durations, deal the tests like
    a deck of cards.  With durations, place the longest remaining test on the
@@ -1500,9 +1509,10 @@ static int assign_groups(unsigned threads, size_t capacity, unsigned *group_of,
   return 1;
 }
 
-/* Split the selected tests into THREADS groups, then cut each group into
-   command lines that fit the platform limit.  The chunks are queued
-   round-robin, so every thread starts on its own group. */
+/* Split balanced groups into command lines that fit the platform limit.
+   Timed chunks run longest first from the shared queue; the estimate models
+   that queue rather than assuming each worker stays with its original group.
+   Without timings, queue round-robin so each worker starts its own group. */
 static void plan_chunks(unsigned threads, chunk_plan *plan)
 {
   size_t count = selected_tests.count, rounds = 0;
@@ -1511,7 +1521,8 @@ static void plan_chunks(unsigned threads, chunk_plan *plan)
   size_t capacity;
   unsigned *group_of = xmalloc(count * sizeof *group_of);
   uint64_t *expected = xmalloc(count * sizeof *expected);
-  uint64_t *work = xmalloc(threads * sizeof *work);
+  uint64_t *loads = xmalloc(threads * sizeof *loads);
+  uint64_t *durations = xmalloc(count * sizeof *durations);
   size_t *start = xmalloc(((size_t)threads + 1) * sizeof *start);
   size_t *next = xmalloc(threads * sizeof *next);
   /* NAMES stays alive for the process lifetime; chunks borrow from it. */
@@ -1525,23 +1536,23 @@ static void plan_chunks(unsigned threads, chunk_plan *plan)
   capacity = base < COMMAND_LINE_LIMIT ? COMMAND_LINE_LIMIT - base : 1;
   timed = assign_groups(threads, capacity, group_of, expected);
 
-  memset(work, 0, threads * sizeof *work);
   memset(start, 0, ((size_t)threads + 1) * sizeof *start);
-  for (size_t i = 0; i < count; ++i) {
+  for (size_t i = 0; i < count; ++i)
     ++start[group_of[i] + 1];
-    if (timed)
-      work[group_of[i]] += expected[i];
-  }
   for (unsigned g = 0; g < threads; ++g) {
     start[g + 1] += start[g];
     next[g] = start[g];
   }
-  for (size_t i = 0; i < count; ++i)
-    names[next[group_of[i]]++] = selected_tests.items[i];
+  for (size_t i = 0; i < count; ++i) {
+    size_t at = next[group_of[i]]++;
+    names[at] = selected_tests.items[i];
+    durations[at] = timed ? expected[i] : 0;
+  }
 
   memset(plan, 0, sizeof *plan);
   for (unsigned g = 0; g < threads; ++g) {
     size_t end = start[g + 1], from = start[g], length = 0;
+    uint64_t duration = 0;
 
     chunks[g] = NULL;
     chunk_counts[g] = 0;
@@ -1552,19 +1563,21 @@ static void plan_chunks(unsigned threads, chunk_plan *plan)
           job *chunk = new_job(JOB_CHUNK);
           chunk->names = names + from;
           chunk->name_count = i - from;
+          chunk->expected_us = duration + timing.overhead_us;
           chunks[g] = xrealloc(chunks[g], (chunk_counts[g] + 1) * sizeof *chunks[g]);
           chunks[g][chunk_counts[g]++] = chunk;
           ++plan->count;
         }
         from = i;
         length = 0;
+        duration = 0;
       }
       length += add;
+      if (i < end)
+        duration += durations[i];
     }
     if (chunk_counts[g] > rounds)
       rounds = chunk_counts[g];
-    if (timed && work[g] + timing.overhead_us * chunk_counts[g] > plan->estimate_us)
-      plan->estimate_us = work[g] + timing.overhead_us * chunk_counts[g];
   }
 
   plan->jobs = xmalloc(plan->count * sizeof *plan->jobs);
@@ -1574,13 +1587,28 @@ static void plan_chunks(unsigned threads, chunk_plan *plan)
       if (r < chunk_counts[g])
         plan->jobs[plan->count++] = chunks[g][r];
 
+  if (timed) {
+    qsort(plan->jobs, plan->count, sizeof *plan->jobs, compare_jobs);
+    memset(loads, 0, threads * sizeof *loads);
+    for (size_t i = 0; i < plan->count; ++i) {
+      unsigned best = 0;
+      for (unsigned g = 1; g < threads; ++g)
+        if (loads[g] < loads[best])
+          best = g;
+      loads[best] += plan->jobs[i]->expected_us;
+      if (loads[best] > plan->estimate_us)
+        plan->estimate_us = loads[best];
+    }
+  }
+
   for (unsigned g = 0; g < threads; ++g)
     free(chunks[g]);
   free(chunks);
   free(chunk_counts);
   free(group_of);
   free(expected);
-  free(work);
+  free(loads);
+  free(durations);
   free(start);
   free(next);
 }
@@ -1689,10 +1717,6 @@ static const char *load_tests(void)
     index_free(&old);
     cache_free(&cache);
   }
-  if (config.cache) {
-    index_build(&timing.index, all_tests.items, all_tests.count);
-    timing.recording = 1;
-  }
   return "listed";
 }
 
@@ -1705,6 +1729,10 @@ static void run_discovery(void)
 
   if (!source)
     return;
+  if (config.cache) {
+    index_build(&timing.index, all_tests.items, all_tests.count);
+    timing.recording = 1;
+  }
   selected_durations = xmalloc(all_tests.count * sizeof *selected_durations);
   for (size_t i = 0; i < all_tests.count; ++i) {
     if (is_selected(all_tests.items[i])) {

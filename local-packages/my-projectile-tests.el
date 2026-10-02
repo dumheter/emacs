@@ -15,8 +15,8 @@
 ;; Listing the tests is slow, so the runner keeps the test list and each
 ;; test's duration in a timing cache per executable.  Batches normally use
 ;; the cache and schedule the tests so that all threads finish together.
-;; Discovery mode (d in the settings) lists the tests again and records new
-;; durations.
+;; Every cached run refreshes the durations.  Discovery mode (d in the
+;; settings) also lists the tests again.
 
 ;;; Code:
 
@@ -51,7 +51,7 @@ The thread count defaults to half the available logical CPUs.")
   "The emacs-test-runner executable used for batch tests.
 Build it as described in README.md.")
 
-(defconst my-projectile-tests--runner-protocol "2"
+(defconst my-projectile-tests--runner-protocol "3"
   "Protocol version this library expects from emacs-test-runner.")
 
 (defconst my-projectile-tests--max-threads 1024
@@ -303,8 +303,11 @@ Press TAB or RET on a failed test to expand its rerun logs."
   "Describe where BATCH's test list came from; FINAL if it has finished."
   (pcase (my-projectile-tests--batch-source batch)
     ("cache"
-     (format "Test list and timings cached %s; press d in the batch settings to rediscover"
-             (my-projectile-tests--batch-cache-time batch)))
+     (format "Test list and timings cached %s%s; press d in the batch settings to rediscover"
+             (my-projectile-tests--batch-cache-time batch)
+             (if-let* ((timed (my-projectile-tests--batch-timed batch)))
+                 (format "; updated timing cache (%d/%d timed)" (car timed) (cdr timed))
+               "")))
     ("listed"
      (if-let* ((timed (my-projectile-tests--batch-timed batch)))
          (format "Discovered tests; recorded timings for %d/%d tests"

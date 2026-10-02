@@ -72,6 +72,16 @@ Check the result with `emacs-test-runner/build/emacs-test-runner --version`.
 Rebuild after pulling changes to `emacs-test-runner/`; Emacs reports a
 protocol mismatch if the build is outdated.
 
+With Python 3 available, check cache refresh, filtering and multi-process
+scheduling on Windows:
+
+```powershell
+python emacs-test-runner\tests.py emacs-test-runner\build\emacs-test-runner.exe
+```
+
+Use `/` paths and omit `.exe` on Linux. These checks use a fake Google Test
+executable and do not run project tests.
+
 ### Windows setup
 
 #### Open files in the same window
@@ -113,12 +123,17 @@ breadcrumbs.
   it prompts for the Google Test executable. Failed tests are rerun with
   logging; press `TAB` on a failure to expand its log. Killing the result
   buffer stops the batch.
-- Listing the tests is slow, so batches normally reuse the test list and
-  per-test durations from the last discovery and split the tests so that all
-  threads finish at about the same time. Discovery mode lists the tests again
-  and records new durations; use it after adding or removing tests. The first
-  batch for an executable always discovers. Caches live in
+- Listing the tests is slow, so batches normally reuse the cached test list
+  and split the tests using their recorded durations. Every run refreshes the
+  durations and process overhead, so balancing adapts without rediscovery.
+  Discovery mode also lists the tests again; use it after adding or removing
+  tests. The first batch for an executable always discovers. Caches live in
   `.cache/emacs-test-runner/`.
+- More threads are not necessarily faster: test executables can have their
+  own worker threads, and concurrent process startup also competes for
+  resources. Compare nearby thread counts with `t`, keeping the same filter
+  and SLOW setting. The estimate includes test-body time and process overhead;
+  faster cache loading cannot remove that overhead.
 
 ## emacs-test-runner
 
@@ -136,11 +151,15 @@ needs a single pipe to Emacs instead:
   finish together. Tests without a recorded duration count as the mean
   duration, and the measured per-process overhead counts too. Without
   durations, it deals the tests round-robin.
-- When discovering with a cache, it reads each test's `time` from the Google
-  Test XML. It also measures the per-process overhead (process wall time
-  minus test time) and saves the list and durations to the cache after the
-  run. Durations of tests that did not run this time are kept from the
-  previous cache.
+- If command-line limits split a group into several processes, the shared
+  queue starts the longest estimated chunks first. The estimate models that
+  queue, including startup overhead for every chunk, rather than assuming
+  workers stay assigned to their original groups.
+- On every run with a cache, it reads each test's `time` from the Google Test
+  XML. It also measures the per-process overhead (process wall time minus
+  test time) and saves the list and durations to the cache after the run.
+  Durations of tests that did not run this time are kept from the previous
+  cache. Cached runs do not list the tests again.
 - Each worker runs one test process at a time with its output redirected to a
   file in a temporary directory created by Emacs (`emacs-test-runner-*` under
   `TEMP`). Emacs reads the Google Test XML and logs from there and deletes the
@@ -154,7 +173,7 @@ needs a single pipe to Emacs instead:
 
 Emacs writes commands to the runner's stdin and reads events from its stdout.
 Both are UTF-8 lines of tab-separated fields, so fields cannot contain tabs or
-line breaks. Protocol version: 2.
+line breaks. Protocol version: 3.
 
 Commands:
 
@@ -169,7 +188,7 @@ Commands:
 | `filter TEXT` | Run only tests whose full name contains `TEXT`. |
 | `exclude-slow` | Skip tests with `SLOW` at the start of the suite, the case or a `/` segment. |
 | `cache PATH` | Timing cache file. Without `rediscover`, a readable cache replaces discovery. |
-| `rediscover` | List the tests even if the cache exists, and record timings to it. |
+| `rediscover` | List the tests even if the cache exists. All cached runs record timings. |
 | `run` | Discover and run the tests. Configuration is fixed afterwards. |
 | `rerun ID NAME` | Run test `NAME` alone with the rerun arguments. |
 | `quit` | Exit once queued work is done. |
@@ -184,7 +203,7 @@ Events:
 | `discovered TOTAL SELECTED THREADS SOURCE ESTIMATE` | Tests are known; `THREADS` processes will run in parallel. `SOURCE` is `listed` or `cache`; `ESTIMATE` is the expected run time in milliseconds, or 0 without timings. |
 | `chunk-done EXIT XML LOG NAME...` | A test process for `NAME...` exited. |
 | `chunk-failed MESSAGE NAME...` | A test process could not start. |
-| `cache-saved TIMED TOTAL` | Discovery saved the cache, with durations for `TIMED` of `TOTAL` tests. Sent before `run-finished`. |
+| `cache-saved TIMED TOTAL` | Saved the cache, with durations for `TIMED` of `TOTAL` tests. Sent before `run-finished` on both discovery and cached runs. |
 | `cache-failed MESSAGE` | The cache was invalid (and is rebuilt) or could not be written. The batch continues. |
 | `run-finished` | All selected tests have been reported. |
 | `rerun-done ID EXIT LOG` | Rerun `ID` exited. |
