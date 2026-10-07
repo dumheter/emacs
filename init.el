@@ -837,6 +837,11 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
   ;;        (c-mode . c-ts-mode)))
   )
 
+(use-package ddf-ts-mode
+  :ensure nil
+  :load-path "local-packages"
+  :mode ("\\.ddf\\'" . ddf-ts-mode))
+
 ;; Load tree-sitter utilities (C++ symbol browsing with consult)
 (load (expand-file-name "treesit-utils" user-emacs-directory))
 (use-package treesit-utils

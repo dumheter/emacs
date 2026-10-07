@@ -113,6 +113,34 @@ changes; symbol highlights remain visible. Use `C-c l h` to request hover
 immediately. C and C++ buffers also highlight symbol references and show
 breadcrumbs.
 
+### DDF
+
+Opening a `.ddf` file selects `ddf-ts-mode` from `local-packages/`. It uses
+Emacs 30's built-in tree-sitter support and the bundled DDF grammar.
+On first use, the mode builds the grammar locally with `cc`, `gcc`, or
+`clang` on Emacs's `exec-path` and installs it in the Emacs `tree-sitter`
+directory. No downloads or tree-sitter CLI are needed to use the mode.
+On Windows, clang also needs a working Windows C toolchain.
+
+Highlighting covers attributes and their positional/named arguments,
+types, fields, enums, modifiers, defaults, functions, events/messages,
+extensions, nested instances, imports, comments, and preprocessor directives.
+Verbatim C++ (`/$`, `/%`, `/@`) and legacy C# (`/#`) blocks are kept
+separate from DDF and highlighted as opaque code. The mode also provides
+comment commands, indentation, and an Imenu index.
+
+Run `M-x ddf-ts-mode-install-grammar` after pulling grammar changes, then
+restart Emacs if the old grammar was already loaded. Compilation errors
+appear in `*DDF grammar build*`. To change the grammar itself, edit
+`local-packages/tree-sitter-ddf/grammar.js` and regenerate its C source with
+`tree-sitter generate --abi 14` from that directory before rebuilding.
+
+Run the DDF parsing/highlighting regression tests from this directory:
+
+```powershell
+emacs --batch -Q -L local-packages -l local-packages\ddf-ts-mode-tests.el -f ert-run-tests-batch-and-exit
+```
+
 ### Projectile tests
 
 - `C-c p c u` runs unit tests and `C-c p c n` runs integration tests. Both
