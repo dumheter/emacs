@@ -105,6 +105,19 @@ Copy `en_US.aff` and `en_US.dic` to `C:/Hunspell`.
 
 ## Usage notes
 
+### Large files and Copilot
+
+On DICE machines, Copilot is disabled in buffers larger than 1 MiB
+(1,048,576 bytes), including when an edit grows a buffer past that limit.
+Smaller buffers keep automatic completions. After shrinking an oversized
+buffer, use `M-x copilot-mode` to enable it again.
+
+This avoids a long freeze after formatting large JSON files. Copilot's
+change tracking sends the entire changed region synchronously over its
+Windows process pipe; `copilot-max-char` does not limit those updates.
+The last visible message may be `Wrote ...`, although the disk save has
+already finished. Formatting, saving, and clipboard integration are unchanged.
+
 ### C and C++
 
 Pause on a C or C++ type name for clangd hover (including size when

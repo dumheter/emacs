@@ -868,10 +868,48 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 (when (string-match "DICE" (system-name))
   (use-package copilot
     :ensure t
-    :hook (prog-mode . copilot-mode)
+    :preface
+    (defconst my-copilot-max-buffer-size (* 1024 1024)
+      "Maximum buffer size in bytes for automatic Copilot integration.")
+
+    (defun my-copilot-buffer-too-large-p ()
+      "Return non-nil if the whole buffer exceeds the Copilot size limit."
+      (save-restriction
+        (widen)
+        (> (1- (position-bytes (point-max))) my-copilot-max-buffer-size)))
+
+    (defun my-copilot-enable-if-small ()
+      "Enable Copilot only in buffers within the size limit."
+      (unless (my-copilot-buffer-too-large-p)
+        (copilot-mode 1)))
+
+    (defun my-copilot-enforce-buffer-size-limit (&rest _)
+      "Disable Copilot if an edit makes the buffer exceed the size limit."
+      (when (and copilot-mode (my-copilot-buffer-too-large-p))
+        (copilot-mode -1)
+        (message "Copilot disabled: buffer exceeds 1 MiB")))
+
+    (defun my-copilot-size-limit-setup ()
+      "Maintain the buffer-size guard when Copilot is toggled."
+      (if copilot-mode
+          (progn
+            ;; Run after change tracking so unregistering its tracker is safe.
+            (add-hook 'after-change-functions
+                      #'my-copilot-enforce-buffer-size-limit t t)
+            (my-copilot-enforce-buffer-size-limit))
+        (remove-hook 'after-change-functions
+                     #'my-copilot-enforce-buffer-size-limit t)))
+
+    :hook ((prog-mode . my-copilot-enable-if-small)
+           (copilot-mode . my-copilot-size-limit-setup))
     :config
+    (remove-hook 'prog-mode-hook #'copilot-mode)
     (setq copilot-indent-offset-warning-disable t)
     (setq copilot-max-char-warning-disable t)
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (bound-and-true-p copilot-mode)
+          (my-copilot-size-limit-setup))))
     :bind (:map copilot-completion-map
                 ("<tab>" . copilot-accept-completion)
                 ("TAB" . copilot-accept-completion)
