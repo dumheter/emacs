@@ -8,3 +8,6 @@ tramp
 transient/
 server/
 emacs-test-runner/build/
+eln-cache/
+history
+tree-sitter/
