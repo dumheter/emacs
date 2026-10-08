@@ -1,3 +1,5 @@
+;;; init.el --- Personal Emacs configuration -*- lexical-binding: t; -*-
+
 ;; See README.md for setup, the quick start guide and usage notes.
 
 (require 'package)
@@ -28,6 +30,9 @@
   :ensure nil
   :config
   (add-to-list 'warning-suppress-types '(undo discard-info))
+  ;; Keep third-party native-compilation warnings in
+  ;; *Async-native-compile-log* instead of popping up *Warnings*.
+  (setq native-comp-async-report-warnings-errors 'silent)
   )
 
 (use-package emacs
@@ -212,9 +217,8 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 (use-package recentf
   :ensure nil ; built in
   :hook (after-init . recentf-mode)
-  :init
-  (run-at-time nil (* 10 60) 'recentf-save-list) ;; save even if emacs crashes
   :config
+  (run-at-time nil (* 10 60) 'recentf-save-list) ;; save even if emacs crashes
   (setq recentf-max-saved-items 5000) ;; keep many things in recentf
   (setq recentf-save-file "~/.emacs.d/recentf")
 
@@ -767,7 +771,7 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 			:host "localhost:1234"
 			:models '(lmstudio))))
   ;; Optional: auto-wrap responses for readability:
-  (defun my-gptel-fill-buffer ()
+  (defun my-gptel-fill-buffer (&rest _)
     (save-excursion
       (fill-region (point-min) (point-max))))
   (gptel-make-openai
@@ -780,7 +784,7 @@ Warns if buffer has unsaved changes. Also removes stray ^M characters."
 	:models '(glm-4.6 glm-4.5 glm-4.5-air)
 	)
 
-  (add-hook 'gptel-post-response-hook #'my-gptel-fill-buffer)
+  (add-hook 'gptel-post-response-functions #'my-gptel-fill-buffer)
   )
 
 (use-package org
@@ -1161,6 +1165,8 @@ the command signals an error."
             (find-file (expand-file-name choice project-root))
             (message "Opened %s" choice))))))))
 
+(defvar compilation-read-command)
+
 (defun my-projectile-configure-project ()
   "Configure the current project using CMake with Ninja for Debug build."
   (interactive)
@@ -1221,7 +1227,7 @@ the command signals an error."
 	  (progn
 		(kill-new buffer-file-name)
 		buffer-file-name)
-	nill))
+	nil))
 
 (defun my-copy-reference-to-here ()
   "Copy a file reference with line number to the clipboard.

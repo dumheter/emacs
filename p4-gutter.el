@@ -227,7 +227,7 @@ Retries only begin while the affected buffer is active."
 (defun p4-gutter--process-sentinel (process _event)
   "Dispatch completion for an asynchronous PROCESS."
   (when (memq (process-status process) '(exit signal failed))
-    (when-let ((timer (process-get process 'p4-gutter-timeout-timer)))
+    (when-let* ((timer (process-get process 'p4-gutter-timeout-timer)))
       (cancel-timer timer))
     (let* ((target (process-get process 'p4-gutter-target-buffer))
            (generation (process-get process 'p4-gutter-generation))
@@ -489,7 +489,7 @@ MARKERS is a list of (LINE . TYPE) pairs."
                  (> (plist-get addition :new-count) 0)
                  (p4-gutter--significant-move-p
                   (plist-get addition :new-lines)))
-        (when-let ((deletion
+        (when-let* ((deletion
                     (cl-find-if
                      (lambda (candidate)
                        (and (not (plist-get candidate :moved))
@@ -563,7 +563,7 @@ MARKERS is a list of (LINE . TYPE) pairs."
                 p4-gutter--baseline-file
                 (file-exists-p p4-gutter--baseline-file)))
       (p4-gutter--fail 'refresh "the Perforce baseline is unavailable")
-    (if-let ((git (p4-gutter--resolve-executable
+    (if-let* ((git (p4-gutter--resolve-executable
                    p4-gutter-git-executable)))
         (condition-case err
             (let ((snapshot (p4-gutter--write-buffer-snapshot)))
