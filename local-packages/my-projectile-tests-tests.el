@@ -1,4 +1,4 @@
-;;; my-projectile-tests-tests.el --- Batch test settings tests -*- lexical-binding: t; -*-
+;;; my-projectile-tests-tests.el --- Batch settings and runner tests -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 ;; Run with emacs --batch -Q --eval '(package-initialize)' -L local-packages
@@ -8,6 +8,7 @@
 
 (require 'cl-lib)
 (require 'ert)
+(require 'json)
 (require 'my-projectile-tests)
 (require 'savehist)
 
@@ -336,6 +337,245 @@
     (my-projectile-tests--handle-event batch '("cache-saved" "2" "3"))
     (should (equal (my-projectile-tests--source-text batch t)
                    "Discovered tests; recorded timings for 2/3 tests"))))
+
+(defun my-projectile-tests-tests--abort-batch (buffer &optional settings)
+  "Return a batch for abort tests, using result BUFFER and SETTINGS buffer."
+  (make-my-projectile-tests--batch
+   :kind 'unit :root default-directory :buffer buffer :settings-buffer settings
+   :process 'runner :cpus 8 :threads 2 :gtest-repeat 1 :repeat 1
+   :results (make-hash-table :test 'equal) :logs (make-hash-table :test 'equal)
+   :test-names (make-hash-table :test 'equal) :tests-done 0
+   :tests '("Suite.Passed" "Suite.Pending") :start-time (current-time)))
+
+(ert-deftest my-projectile-tests-abort-keybindings ()
+  (should (eq (lookup-key my-projectile-tests-settings-mode-map (kbd "<f8>"))
+              #'my-projectile-tests-abort))
+  (should (eq (lookup-key my-projectile-tests-mode-map (kbd "<f8>"))
+              #'my-projectile-tests-abort))
+  (should (eq (lookup-key my-projectile-tests-settings-mode-map (kbd "q"))
+              #'quit-window)))
+
+(ert-deftest my-projectile-tests-abort-waits-for-acknowledgement ()
+  (with-temp-buffer
+    (my-projectile-tests-settings-mode)
+    (setq my-projectile-tests--project-root default-directory)
+    (let ((settings (current-buffer)))
+      (with-temp-buffer
+        (my-projectile-tests-mode)
+        (let* ((batch (my-projectile-tests-tests--abort-batch (current-buffer) settings))
+               (commands nil)
+               (my-projectile-tests--current-batch batch))
+          (with-current-buffer settings
+            (setq my-projectile-tests--settings-batch batch))
+          (puthash "Suite.Passed" 'passed (my-projectile-tests--batch-results batch))
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                    ((symbol-function 'my-projectile-tests--send)
+                     (lambda (_batch &rest fields) (push fields commands)))
+                    ((symbol-function 'process-send-string)
+                     (lambda (&rest _) (ert-fail "Acknowledged abort sent another command"))))
+            (with-current-buffer settings
+              (call-interactively (lookup-key (current-local-map) (kbd "<f8>"))))
+            (should (my-projectile-tests--batch-aborting batch))
+            (should-not (my-projectile-tests--batch-finished batch))
+            (should-not (my-projectile-tests--batch-aborted batch))
+            (should (string-match-p "Aborting; waiting" (buffer-string)))
+            (should (string-match-p "Aborting; waiting"
+                                    (with-current-buffer settings (buffer-string))))
+            (my-projectile-tests-abort)
+            (should (equal commands '(("abort"))))
+            (cl-letf (((symbol-function 'my-projectile-tests--start-reruns)
+                       (lambda (_) (ert-fail "Aborting batch started diagnostic reruns"))))
+              (my-projectile-tests--handle-event batch '("run-finished")))
+            (should-not (my-projectile-tests--batch-finished batch))
+            (cl-letf (((symbol-function 'process-get) (lambda (&rest _) batch)))
+              (my-projectile-tests--runner-filter 'runner "abor")
+              (should-not (my-projectile-tests--batch-finished batch))
+              (my-projectile-tests--runner-filter 'runner "ted\r\n"))
+            (should (my-projectile-tests--batch-aborted batch))
+            (should (my-projectile-tests--batch-finished batch))
+            (should-not (my-projectile-tests--batch-aborting batch))
+            (should-not (my-projectile-tests--batch-errors batch))
+            (should (eq (gethash "Suite.Passed" (my-projectile-tests--batch-results batch))
+                        'passed))
+            (should (eq (gethash "Suite.Pending" (my-projectile-tests--batch-results batch))
+                        'not-run))
+            (should (string-match-p "ABORTED: test processes stopped" (buffer-string)))
+            (should (string-match-p "1/2 passed (0 failed, 0 skipped, 1 not run)"
+                                    (buffer-string)))
+            (should (string-match-p "Unit batch: ABORTED"
+                                    (with-current-buffer settings (buffer-string))))))))))
+
+(ert-deftest my-projectile-tests-abort-invalid-and-failed-requests ()
+  (with-temp-buffer
+    (my-projectile-tests-mode)
+    (should-error (my-projectile-tests-abort) :type 'user-error)
+    (let* ((batch (my-projectile-tests-tests--abort-batch (current-buffer)))
+           (my-projectile-tests--current-batch batch))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) nil)))
+        (should-error (my-projectile-tests-abort) :type 'user-error))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'my-projectile-tests--send)
+                 (lambda (&rest _) (error "Broken pipe"))))
+        (should-error (my-projectile-tests-abort) :type 'user-error)
+        (should-not (my-projectile-tests--batch-aborting batch))
+        (should-not (my-projectile-tests--batch-aborted batch))
+        (setf (my-projectile-tests--batch-finished batch) t)
+        (should-error (my-projectile-tests-abort) :type 'user-error)
+        (setf (my-projectile-tests--batch-finished batch) nil
+              (my-projectile-tests--batch-cancelled batch) t)
+        (should-error (my-projectile-tests-abort) :type 'user-error)))))
+
+(ert-deftest my-projectile-tests-abort-preserves-failures-and-discovery ()
+  (dolist (discovering '(nil t))
+    (with-temp-buffer
+      (my-projectile-tests-mode)
+      (let ((batch (my-projectile-tests-tests--abort-batch (current-buffer))))
+        (setf (my-projectile-tests--batch-aborting batch) t)
+        (if discovering
+            (setf (my-projectile-tests--batch-tests batch) nil
+                  (my-projectile-tests--batch-discovering batch)
+                  '("Suite.Pending" "Suite.Passed"))
+          (puthash "Suite.Passed" 'failed (my-projectile-tests--batch-results batch))
+          (puthash "Suite.Passed" "Original failure log"
+                   (my-projectile-tests--batch-logs batch)))
+        (my-projectile-tests--handle-event batch '("aborted"))
+        (should (my-projectile-tests--batch-finished batch))
+        (should (equal (my-projectile-tests--batch-tests batch)
+                       '("Suite.Passed" "Suite.Pending")))
+        (should (eq (gethash "Suite.Pending" (my-projectile-tests--batch-results batch))
+                    'not-run))
+        (unless discovering
+          (should (eq (gethash "Suite.Passed" (my-projectile-tests--batch-results batch))
+                      'failed))
+          (should (string-match-p "Original failure log" (buffer-string))))))))
+
+(ert-deftest my-projectile-tests-abort-during-rerun-waits-for-acknowledgement ()
+  (with-temp-buffer
+    (my-projectile-tests-mode)
+    (let ((batch (my-projectile-tests-tests--abort-batch (current-buffer))))
+      (setf (my-projectile-tests--batch-aborting batch) t
+            (my-projectile-tests--batch-rerun-names batch) ["Suite.Passed"]
+            (my-projectile-tests--batch-reruns-total batch) 1
+            (my-projectile-tests--batch-reruns-done batch) 0)
+      (my-projectile-tests--rerun-finished batch "0" "Diagnostic output")
+      (should-not (my-projectile-tests--batch-finished batch))
+      (should (equal (gethash "Suite.Passed" (my-projectile-tests--batch-logs batch))
+                     "Diagnostic output"))
+      (my-projectile-tests--handle-event batch '("aborted"))
+      (should (my-projectile-tests--batch-aborted batch)))))
+
+(ert-deftest my-projectile-tests-abort-unacknowledged-exit-is-an-error ()
+  (with-temp-buffer
+    (my-projectile-tests-mode)
+    (let ((batch (my-projectile-tests-tests--abort-batch (current-buffer))))
+      (setf (my-projectile-tests--batch-aborting batch) t)
+      (cl-letf (((symbol-function 'process-get) (lambda (&rest _) batch))
+                ((symbol-function 'process-live-p) (lambda (_) nil)))
+        (my-projectile-tests--runner-sentinel 'runner "exited abnormally with code 2\n"))
+      (should (my-projectile-tests--batch-finished batch))
+      (should-not (my-projectile-tests--batch-aborted batch))
+      (should (string-match-p "exited before acknowledging abort" (buffer-string))))))
+
+(ert-deftest my-projectile-tests-abort-runner-error-is-not-an-acknowledgement ()
+  (with-temp-buffer
+    (my-projectile-tests-mode)
+    (let ((batch (my-projectile-tests-tests--abort-batch (current-buffer))))
+      (setf (my-projectile-tests--batch-aborting batch) t)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) nil)))
+        (my-projectile-tests--handle-event batch '("error" "Could not stop test processes")))
+      (should (my-projectile-tests--batch-finished batch))
+      (should-not (my-projectile-tests--batch-aborted batch))
+      (should (string-match-p "Could not stop test processes" (buffer-string))))))
+
+(ert-deftest my-projectile-tests-abort-real-runner ()
+  (let ((python (executable-find "python"))
+        (script (expand-file-name "emacs-test-runner/tests.py" user-emacs-directory))
+        (runner my-projectile-tests-runner-program))
+    (skip-unless (and python (file-executable-p runner) (file-readable-p script)))
+    (let* ((root (file-name-as-directory (make-temp-file "projectile-abort-ui-" t)))
+           (scenario (expand-file-name "scenario.json" root))
+           (start-runner (symbol-function 'my-projectile-tests--start-runner))
+           batch)
+      (unwind-protect
+          (with-temp-buffer
+            (my-projectile-tests-settings-mode)
+            (setq my-projectile-tests--project-root root)
+            (with-temp-file scenario
+              (insert (json-encode
+                       '((names . ["Suite.One"]) (observed_us . 1000)
+                         (native_repeat . 1) (fail_first_process . :json-false)
+                         (fail_early_native . :json-false) (sleep_seconds . 0)
+                         (forbid_discovery . :json-false) (hang_stage . "run")))))
+            (let ((my-projectile-tests-batch-settings '(:fresh t :threads 1)))
+              (cl-letf (((symbol-function 'read-file-name) (lambda (&rest _) python))
+                        ((symbol-function 'save-some-buffers) (lambda (&rest _) nil))
+                        ((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) buffer))
+                        ((symbol-function 'my-projectile-tests--start-runner)
+                         (lambda (run program)
+                           (setf (my-projectile-tests--batch-flags run)
+                                 (list script "--fake-gtest" scenario))
+                           (funcall start-runner run program))))
+                (call-interactively (lookup-key (current-local-map) (kbd "u")))))
+            (setq batch my-projectile-tests--settings-batch)
+            (should batch)
+            (let ((deadline (+ (float-time) 10))
+                  (process (my-projectile-tests--batch-process batch)))
+              (while (and (not (directory-files root nil "\\.child\\'"))
+                          (not (my-projectile-tests--batch-finished batch))
+                          (< (float-time) deadline))
+                (accept-process-output process 0.05))
+              (should (directory-files root nil "\\.child\\'"))
+              (call-interactively (lookup-key (current-local-map) (kbd "<f8>")))
+              (while (and (or (not (my-projectile-tests--batch-finished batch))
+                              (process-live-p process))
+                          (< (float-time) deadline))
+                (accept-process-output process 0.05))
+              (should (my-projectile-tests--batch-aborted batch))
+              (should (my-projectile-tests--batch-finished batch))
+              (should-not (my-projectile-tests--batch-errors batch))
+              (should-not (process-live-p process))
+              (should (= (process-exit-status process) 0))
+              (should (string-match-p "Unit batch: ABORTED" (buffer-string)))
+              (should (buffer-live-p (my-projectile-tests--batch-buffer batch)))
+              (should (file-directory-p (my-projectile-tests--batch-outdir batch)))
+              (with-current-buffer (my-projectile-tests--batch-buffer batch)
+                (should (string-match-p "ABORTED: test processes stopped" (buffer-string)))
+                (should (string-match-p "0/1 passed (0 failed, 0 skipped, 1 not run)"
+                                        (buffer-string))))))
+        (when (and batch (buffer-live-p (my-projectile-tests--batch-buffer batch)))
+          (kill-buffer (my-projectile-tests--batch-buffer batch)))
+        (delete-directory root t)))))
+
+(ert-deftest my-projectile-tests-abort-reopened-settings-target-latest-project-batch ()
+  (let ((root default-directory)
+        (old (generate-new-buffer " *old projectile abort test*"))
+        (latest (generate-new-buffer " *latest projectile abort test*"))
+        (other (generate-new-buffer " *other projectile abort test*"))
+        settings)
+    (unwind-protect
+        (progn
+          (dolist (buffer (list old latest other))
+            (with-current-buffer buffer
+              (setq my-projectile-tests--current-batch
+                    (my-projectile-tests-tests--abort-batch buffer))))
+          (setf (my-projectile-tests--batch-start-time
+                 (buffer-local-value 'my-projectile-tests--current-batch old))
+                (time-subtract (current-time) 10)
+                (my-projectile-tests--batch-root
+                 (buffer-local-value 'my-projectile-tests--current-batch other))
+                "another-project")
+          (cl-letf (((symbol-function 'projectile-acquire-root) (lambda () root))
+                    ((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) buffer)))
+            (setq settings (my-projectile-test-project-batch))
+            (with-current-buffer settings
+              (should (eq my-projectile-tests--settings-batch
+                          (buffer-local-value 'my-projectile-tests--current-batch latest)))
+              (should (eq (my-projectile-tests--batch-settings-buffer
+                           my-projectile-tests--settings-batch) settings))
+              (should (string-match-p "\\[F8\\]  Abort current run" (buffer-string))))))
+      (dolist (buffer (list old latest other settings))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (provide 'my-projectile-tests-tests)
 ;;; my-projectile-tests-tests.el ends here

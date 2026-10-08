@@ -42,8 +42,8 @@
 #include <string.h>
 
 #define RUNNER_NAME "emacs-test-runner"
-#define RUNNER_VERSION "1.3"
-#define PROTOCOL_VERSION "4"
+#define RUNNER_VERSION "1.4"
+#define PROTOCOL_VERSION "5"
 #define MAX_THREADS 1024u
 #define MAX_REPEAT 1000000u
 
@@ -224,6 +224,7 @@ static void cond_wait(cond_t *cond, mutex_t *mutex)
 }
 static void cond_broadcast(cond_t *cond) { WakeAllConditionVariable(cond); }
 
+static mutex_t spawn_lock;
 static HANDLE job_handle;
 static HANDLE null_handle;
 static uint64_t counter_frequency;
@@ -338,6 +339,7 @@ static void platform_init(void)
 
   _setmode(_fileno(stdin), _O_BINARY);
   _setmode(_fileno(stdout), _O_BINARY);
+  mutex_init(&spawn_lock);
   QueryPerformanceFrequency(&frequency);
   counter_frequency = (uint64_t)frequency.QuadPart;
 
@@ -356,11 +358,36 @@ static void platform_init(void)
     die("could not open NUL");
 }
 
+NORETURN static void platform_exit(int code)
+{
+  ExitProcess((UINT)code);
+}
+
+static int stop_children(char *message, size_t size)
+{
+  JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting;
+
+  if (!TerminateJobObject(job_handle, 1)) {
+    windows_error(message, size, "TerminateJobObject", GetLastError());
+    return 0;
+  }
+  for (;;) {
+    if (!QueryInformationJobObject(job_handle, JobObjectBasicAccountingInformation,
+                                   &accounting, sizeof accounting, NULL)) {
+      windows_error(message, size, "QueryInformationJobObject", GetLastError());
+      return 0;
+    }
+    if (accounting.ActiveProcesses == 0)
+      return 1;
+    Sleep(1);
+  }
+}
+
 NORETURN static void stop_all_and_exit(int code)
 {
   fflush(stdout);
   TerminateJobObject(job_handle, 1);
-  ExitProcess((UINT)code);
+  platform_exit(code);
 }
 
 static void run_process(const strvec *argv, const char *cwd, const char *log_path,
@@ -432,6 +459,7 @@ static void run_process(const strvec *argv, const char *cwd, const char *log_pat
   startup.StartupInfo.hStdOutput = log;
   startup.StartupInfo.hStdError = log;
   startup.lpAttributeList = attributes;
+  mutex_lock(&spawn_lock);
   if (!CreateProcessW(NULL, wide_command, NULL, NULL, TRUE,
                       EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW
                         | CREATE_UNICODE_ENVIRONMENT,
@@ -439,9 +467,11 @@ static void run_process(const strvec *argv, const char *cwd, const char *log_pat
     DWORD error = GetLastError();
     windows_error(result->message, sizeof result->message, "CreateProcess", error);
     result->retryable = windows_resource_error(error);
+    mutex_unlock(&spawn_lock);
     goto done;
   }
   child_started();
+  mutex_unlock(&spawn_lock);
   CloseHandle(info.hThread);
   CloseHandle(log);
   log = INVALID_HANDLE_VALUE;
@@ -573,13 +603,31 @@ static void platform_init(void)
   mutex_init(&spawn_lock);
 }
 
+NORETURN static void platform_exit(int code)
+{
+  _exit(code);
+}
+
+static int stop_children(char *message, size_t size)
+{
+  int ok = 1;
+
+  for (size_t i = 0; i < live_count; ++i)
+    if (kill(-live_pids[i], SIGKILL) != 0 && errno != ESRCH) {
+      snprintf(message, size, "Killing test process group %ld failed: %s",
+               (long)live_pids[i], strerror(errno));
+      ok = 0;
+    }
+  return ok;
+}
+
 NORETURN static void stop_all_and_exit(int code)
 {
   fflush(stdout);
   mutex_lock(&spawn_lock);
   for (size_t i = 0; i < live_count; ++i)
-    kill(live_pids[i], SIGKILL);
-  _exit(code);
+    kill(-live_pids[i], SIGKILL);
+  platform_exit(code);
 }
 
 NORETURN static void exec_child(char **argv, const char *cwd, int null_fd, int log_fd,
@@ -589,7 +637,8 @@ NORETURN static void exec_child(char **argv, const char *cwd, int null_fd, int l
 #if defined(__linux__)
   prctl(PR_SET_PDEATHSIG, SIGKILL);
 #endif
-  if ((cwd && *cwd && chdir(cwd) != 0) || dup2(null_fd, 0) < 0 || dup2(log_fd, 1) < 0
+  if (setpgid(0, 0) != 0 || (cwd && *cwd && chdir(cwd) != 0)
+      || dup2(null_fd, 0) < 0 || dup2(log_fd, 1) < 0
       || dup2(log_fd, 2) < 0)
     goto fail;
   execvp(argv[0], argv);
@@ -641,6 +690,16 @@ static void run_process(const strvec *argv, const char *cwd, const char *log_pat
   if (pid < 0) {
     snprintf(result->message, sizeof result->message, "fork failed: %s", strerror(errno));
     result->retryable = posix_resource_error(errno);
+    goto unlock;
+  }
+  /* Make the group visible to stop even before the child reaches exec. */
+  if (setpgid(pid, pid) != 0 && errno != EACCES && errno != ESRCH) {
+    int error = errno;
+    kill(pid, SIGKILL);
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+      ;
+    snprintf(result->message, sizeof result->message, "setpgid failed: %s",
+             strerror(error));
     goto unlock;
   }
   child_started();
@@ -906,6 +965,33 @@ static struct {
 static strvec all_tests;             /* Every listed test, in list order. */
 static strvec selected_tests;        /* Borrowed from all_tests. */
 static uint64_t *selected_durations; /* Parallel to selected_tests. */
+
+NORETURN static void abort_run(void)
+{
+  char message[512];
+  strbuf line = { 0 };
+  int failed;
+
+  /* Freeze scheduling, output and spawning until the acknowledgement is sent. */
+  mutex_lock(&queue.lock);
+  mutex_lock(&output_lock);
+  mutex_lock(&spawn_lock);
+  if (!stop_children(message, sizeof message)) {
+    sb_add(&line, "error");
+    sb_add_field(&line, message);
+    sb_addc(&line, '\n');
+    (void)fwrite(line.data, 1, line.len, stdout);
+    (void)fflush(stdout);
+    mutex_unlock(&spawn_lock);
+    stop_all_and_exit(2);
+  }
+  mutex_lock(&children.lock);
+  while (children.running > 0)
+    cond_wait(&children.exited, &children.lock);
+  mutex_unlock(&children.lock);
+  failed = fputs("aborted\n", stdout) == EOF || fflush(stdout) != 0;
+  platform_exit(failed ? 1 : 0);
+}
 
 static void enqueue_locked(job *item)
 {
@@ -2076,6 +2162,8 @@ static void handle_command(char **fields, size_t count)
     mutex_unlock(&queue.lock);
   } else if (strcmp(command, "stop") == 0 && count == 1) {
     stop_all_and_exit(0);
+  } else if (strcmp(command, "abort") == 0 && count == 1) {
+    abort_run();
   } else {
     sb_addf(&message, "invalid command: %s with %lu argument(s)", command,
             (unsigned long)(count - 1));

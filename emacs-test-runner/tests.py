@@ -1,7 +1,10 @@
 """Runner regressions: python emacs-test-runner\\tests.py RUNNER."""
 
+import ctypes
 import json
+import os
 import pathlib
+import signal
 import struct
 import subprocess
 import sys
@@ -13,6 +16,54 @@ import xml.etree.ElementTree as ET
 
 UNKNOWN = 2**64 - 1
 HEADER = struct.Struct("=8sIIQQ")
+
+
+def process_running(pid):
+    if os.name == "nt":
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            if ctypes.get_last_error() == 87:
+                return False
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            status = kernel.WaitForSingleObject(handle, 0)
+            if status not in (0, 258):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return status == 258
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    if pathlib.Path("/proc").is_dir():
+        try:
+            return not pathlib.Path(f"/proc/{pid}/stat").read_text().partition(") ")[2].startswith("Z ")
+        except FileNotFoundError:
+            return False
+    return True
+
+
+def pause_fake_gtest(scenario, stage):
+    if scenario.get("hang_stage") != stage:
+        return
+    directory = pathlib.Path(sys.argv[2]).parent
+    child_marker = directory / f"{stage}-{os.getpid()}.child"
+    child = subprocess.Popen([sys.executable, str(pathlib.Path(__file__).resolve()),
+                              "--fake-child", str(child_marker)])
+    marker = directory / f"{stage}-{os.getpid()}.ready"
+    pending = marker.with_suffix(".pending")
+    pending.write_text(json.dumps(dict(pid=os.getpid(), child=child.pid)))
+    pending.replace(marker)
+    time.sleep(60)
 
 
 def write_cache(path, names, durations, overhead):
@@ -37,6 +88,7 @@ def read_cache(path):
 def fake_gtest():
     scenario = json.loads(pathlib.Path(sys.argv[2]).read_text())
     if "--gtest_list_tests" in sys.argv:
+        pause_fake_gtest(scenario, "discover")
         assert not any(arg.startswith("--gtest_repeat=") for arg in sys.argv)
         if scenario["forbid_discovery"]:
             sys.exit("Cached runs must not list tests")
@@ -51,6 +103,7 @@ def fake_gtest():
     assert native_repeat == scenario["native_repeat"]
     output = next((arg for arg in sys.argv if arg.startswith("--gtest_output=xml:")), None)
     xml_path = pathlib.Path(output.partition("xml:")[2]) if output else None
+    pause_fake_gtest(scenario, "run" if xml_path else "rerun")
     chunk_id = int(xml_path.stem.split("-")[1]) if xml_path else 0
     started = time.perf_counter()
     time.sleep(scenario["sleep_seconds"])
@@ -147,7 +200,7 @@ class RunnerTests(unittest.TestCase):
                 finally:
                     deadline.cancel()
             events = [line.split("\t") for line in output.splitlines()]
-            self.assertEqual(events[0], ["hello", "emacs-test-runner", "4"])
+            self.assertEqual(events[0], ["hello", "emacs-test-runner", "5"])
             if rerun:
                 self.assertEqual(events[-1][:3], ["rerun-done", "0", "0"])
                 rerun_log = pathlib.Path(events[-1][3]).read_text()
@@ -351,7 +404,116 @@ class RunnerTests(unittest.TestCase):
                         capture_output=True, text=True, encoding="utf-8", timeout=10)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stdout.splitlines(),
-                                     ["hello\temacs-test-runner\t4"])
+                                     ["hello\temacs-test-runner\t5"])
+
+    def run_abort(self, stage, immediate=False):
+        with tempfile.TemporaryDirectory(prefix="emacs-runner-abort-") as directory:
+            outdir = pathlib.Path(directory)
+            cache = outdir / "timings.etr"
+            scenario = outdir / "scenario.json"
+            names = ["Suite.One", "Suite.Two"]
+            scenario.write_text(json.dumps(dict(
+                names=names, observed_us=1000, native_repeat=1,
+                fail_first_process=False, fail_early_native=False,
+                sleep_seconds=0, forbid_discovery=stage != "discover",
+                hang_stage=stage)))
+            commands = [f"exe\t{sys.executable}", f"cwd\t{directory}",
+                        f"outdir\t{directory}", f"arg\t{pathlib.Path(__file__).resolve()}",
+                        "arg\t--fake-gtest", f"arg\t{scenario}",
+                        f"rerun-arg\t{pathlib.Path(__file__).resolve()}",
+                        "rerun-arg\t--fake-gtest", f"rerun-arg\t{scenario}",
+                        "threads\t3", "repeat\t20" if stage == "run" else "repeat\t1"]
+            if stage != "discover":
+                write_cache(cache, names, [1000] * len(names), 1000)
+                commands.append(f"cache\t{cache}")
+            commands.append("run")
+            if immediate:
+                commands.append("abort")
+            pids = set()
+            with subprocess.Popen([RUNNER], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True, encoding="utf-8") as process:
+                deadline = threading.Timer(15, process.kill)
+                deadline.start()
+                try:
+                    process.stdin.write("\n".join(commands) + "\n")
+                    process.stdin.flush()
+                    prefix = []
+                    if stage == "rerun":
+                        for line in process.stdout:
+                            prefix.append(line)
+                            if line.startswith("run-finished"):
+                                break
+                        self.assertTrue(prefix[-1].startswith("run-finished"))
+                        process.stdin.write("rerun\t0\tSuite.One\n")
+                        process.stdin.flush()
+                    expected = 3 if stage == "run" else 1
+                    until = time.monotonic() + 5
+                    if not immediate:
+                        while time.monotonic() < until:
+                            ready = list(outdir.glob(f"{stage}-*.ready"))
+                            if len(ready) == expected and len(list(outdir.glob("*.child"))) == expected:
+                                break
+                            time.sleep(0.01)
+                        self.assertEqual(len(ready), expected, "Test processes did not start")
+                        self.assertEqual(len(list(outdir.glob("*.child"))), expected)
+                    original_cache = cache.read_bytes() if cache.exists() else None
+                    if not immediate:
+                        process.stdin.write("abort\n")
+                        process.stdin.flush()
+                    output, errors = process.communicate(timeout=5)
+                    self.assertEqual(process.returncode, 0, errors)
+                    events = [line.split("\t") for line in
+                              ("".join(prefix) + output).splitlines()]
+                    self.assertEqual(events[0], ["hello", "emacs-test-runner", "5"])
+                    self.assertEqual(events[-1], ["aborted"])
+                    self.assertEqual(events.count(["aborted"]), 1)
+                    self.assertFalse(any(e[0] in ("error", "discover-failed", "chunk-failed",
+                                                 "rerun-done", "rerun-failed")
+                                         for e in events), events)
+                    if stage != "rerun":
+                        self.assertFalse(any(e[0] == "chunk-done" for e in events), events)
+                        self.assertNotIn(["run-finished"], events)
+                    self.assertEqual(cache.read_bytes() if cache.exists() else None, original_cache)
+                    ready = list(outdir.glob(f"{stage}-*.ready"))
+                    if not immediate:
+                        self.assertEqual(len(ready), expected)
+                    for marker in ready:
+                        info = json.loads(marker.read_text())
+                        pids.update(info.values())
+                        self.assertFalse(process_running(info["pid"]),
+                                         "Runner acknowledged before its test exited")
+                    until = time.monotonic() + 1
+                    while any(process_running(pid) for pid in pids) and time.monotonic() < until:
+                        time.sleep(0.01)
+                    self.assertFalse(any(process_running(pid) for pid in pids),
+                                     "Aborted batch left a descendant running")
+                finally:
+                    deadline.cancel()
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+                    for marker in outdir.glob("*.ready"):
+                        pids.update(json.loads(marker.read_text()).values())
+                    for pid in pids:
+                        if process_running(pid):
+                            os.kill(pid, signal.SIGTERM)
+
+    def test_abort_kills_discovery_workers_and_diagnostic_reruns(self):
+        for stage in ("discover", "run", "rerun"):
+            with self.subTest(stage=stage):
+                self.run_abort(stage)
+
+    def test_abort_races_with_worker_startup(self):
+        for _ in range(10):
+            self.run_abort("run", immediate=True)
+
+    def test_abort_before_run_is_acknowledged(self):
+        result = subprocess.run([RUNNER], input="abort\n", capture_output=True,
+                                text=True, encoding="utf-8", timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(),
+                         ["hello\temacs-test-runner\t5", "aborted"])
 
     def test_fresh_run_ignores_invalid_cache_and_applies_filters(self):
         names = ["Suite.Fast", "Suite.Fast/0", "Suite.Other",
@@ -364,7 +526,10 @@ class RunnerTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--fake-gtest":
+    if len(sys.argv) > 1 and sys.argv[1] == "--fake-child":
+        pathlib.Path(sys.argv[2]).write_text(str(os.getpid()))
+        time.sleep(60)
+    elif len(sys.argv) > 1 and sys.argv[1] == "--fake-gtest":
         fake_gtest()
     else:
         RUNNER = str(pathlib.Path(sys.argv.pop(1)).resolve())

@@ -73,7 +73,7 @@ Rebuild after pulling changes to `emacs-test-runner/`; Emacs reports a
 protocol mismatch if the build is outdated.
 
 With Python 3 available, check cache refresh, runs without cache, filtering,
-repeats and multi-process scheduling on Windows:
+repeats, multi-process scheduling and abort cleanup on Windows:
 
 ```powershell
 python emacs-test-runner\tests.py emacs-test-runner\build\emacs-test-runner.exe
@@ -193,8 +193,16 @@ emacs --batch -Q -L local-packages -l local-packages\ddf-ts-mode-tests.el -f ert
   unit/integration tests. Both disable flags default to enabled, apply only
   to TnT batches, and are saved across Emacs sessions with the other settings.
   Outside TnT it prompts for the Google Test executable. Failed tests are
-  rerun with logging; press `TAB` on a failure to expand its log. Killing the result
-  buffer stops the batch.
+  rerun with logging; press `TAB` on a failure to expand its log.
+- Press **F8** in settings or results to abort a run without closing either
+  buffer; `q` still only closes the settings window. Settings target the most
+  recently launched batch for that project; results target their own batch.
+  Emacs shows **Aborting** while the runner kills its running test processes
+  (including descendants) and exits, then **ABORTED** after its acknowledgement.
+  This also works during discovery and diagnostic reruns. Completed results
+  and failure logs remain available; unfinished tests are marked **NOT RUN**.
+  A runner that exits without acknowledging the abort is reported as an error.
+  Killing the result buffer still stops the batch and removes its temporary logs.
 - Settings values are muted at their defaults; active overrides use the
   theme's warning color. An explicit thread count equal to the automatic
   default stays muted, as does discovery mode when **Run without cache**
@@ -231,6 +239,15 @@ emacs --batch -Q -L local-packages -l local-packages\ddf-ts-mode-tests.el -f ert
   resources. Compare nearby thread counts with `t`, keeping the same filter
   and SLOW setting. The estimate includes test-body time and process overhead;
   faster cache loading cannot remove that overhead.
+
+Run the abort UI regressions with installed Emacs packages:
+
+```powershell
+emacs --batch -Q --eval "(package-initialize)" -L local-packages -l local-packages\my-projectile-tests-tests.el --eval '(ert-run-tests-batch-and-exit "^my-projectile-tests-abort-")'
+```
+
+These checks include a real runner abort when the runner is built and Python
+is available; they do not run project tests.
 
 ## emacs-test-runner
 
@@ -273,12 +290,15 @@ needs a single pipe to Emacs instead:
   the worker waits for one to exit and retries.
 - Test processes die with the runner: on Windows they run in a kill-on-close
   job object; on Linux they get `SIGKILL` when the runner dies.
+  Explicit aborts kill the Windows job or each POSIX test process group,
+  stop further work from starting, and wait for the running test processes
+  to exit before acknowledging.
 
 ### Protocol
 
 Emacs writes commands to the runner's stdin and reads events from its stdout.
 Both are UTF-8 lines of tab-separated fields, so fields cannot contain tabs or
-line breaks. Protocol version: 4.
+line breaks. Protocol version: 5.
 
 Commands:
 
@@ -299,6 +319,7 @@ Commands:
 | `run` | Discover and run the tests. Configuration is fixed afterwards. |
 | `rerun ID NAME` | Run test `NAME` alone with the rerun arguments. |
 | `quit` | Exit once queued work is done. |
+| `abort` | Discard queued work, kill running test processes and their descendants, wait for the test processes to exit, send `aborted`, then exit. On Windows the whole job must exit before acknowledgement. An abort failure sends `error` and exits unsuccessfully instead. |
 | `stop` | Kill all test processes and exit immediately. Closing stdin does the same. |
 
 Events:
@@ -315,6 +336,7 @@ Events:
 | `run-finished` | All selected tests have been reported. |
 | `rerun-done ID EXIT LOG` | Rerun `ID` exited. |
 | `rerun-failed ID MESSAGE` | Rerun `ID` could not start. |
+| `aborted` | Explicit abort completed; running test processes have exited. The runner flushes this final event before exiting with status 0. No subsequent results, reruns or normal completion are sent. |
 | `discover-failed MESSAGE LOG` | Discovery failed; `LOG` may be empty. |
 | `error MESSAGE` | Invalid command or configuration. |
 

@@ -56,7 +56,7 @@ Both repeat counts default to 1.")
   "The emacs-test-runner executable used for batch tests.
 Build it as described in README.md.")
 
-(defconst my-projectile-tests--runner-protocol "4"
+(defconst my-projectile-tests--runner-protocol "5"
   "Protocol version this library expects from emacs-test-runner.")
 
 (defconst my-projectile-tests--max-threads 1024
@@ -124,9 +124,10 @@ With prefix ARG, force the command prompt."
   discover cache source cache-time estimate timed
   process pending outdir discovering tests results logs errors tests-done
   rerun-names reruns-total reruns-done start-time elapsed finished cancelled
-  gtest-repeat repeat test-names)
+  gtest-repeat repeat test-names settings-buffer aborting aborted)
 
 (defvar-local my-projectile-tests--current-batch nil)
+(defvar-local my-projectile-tests--settings-batch nil)
 (defvar-local my-projectile-tests--project-root nil)
 
 (define-derived-mode my-projectile-tests-settings-mode special-mode "Projectile Batch Settings"
@@ -137,6 +138,7 @@ l/c to toggle TnT's disableLogs/disableCallstackResolution flags, or u/i to run
 unit/integration tests with the displayed settings.
 Press g to set --gtest_repeat within each process, or p to set independent
 parallel repeats of each selected test.
+Press F8 to abort the most recently launched batch for this project.
 Default values are muted; active non-default values use the theme's
 warning face.  By default, SLOW tests are excluded and discovery is off.")
 
@@ -234,6 +236,29 @@ otherwise use the muted shadow face."
             (propertize "[i]  INTEGRATION TESTS"
                         'face '(:inherit success :weight bold))
             "\n")
+    (insert "\n  "
+            (propertize "[F8]  Abort current run" 'face 'warning)
+            "\n")
+    (when-let* ((batch my-projectile-tests--settings-batch))
+      (insert "  "
+              (propertize
+               (format "%s batch: %s"
+                       (capitalize (symbol-name (my-projectile-tests--batch-kind batch)))
+                       (cond
+                        ((my-projectile-tests--batch-aborted batch) "ABORTED")
+                        ((my-projectile-tests--batch-aborting batch)
+                         "Aborting; waiting for runner acknowledgement...")
+                        ((my-projectile-tests--batch-finished batch)
+                         (if (my-projectile-tests--batch-errors batch)
+                             "Finished with errors" "Finished"))
+                        ((not (buffer-live-p (my-projectile-tests--batch-buffer batch)))
+                         "Result buffer closed")
+                        (t "Running")))
+               'face (if (or (my-projectile-tests--batch-aborting batch)
+                             (my-projectile-tests--batch-aborted batch)
+                             (my-projectile-tests--batch-errors batch))
+                         'warning 'shadow))
+              "\n"))
     (insert "\n  "
             (propertize "[q]  Close settings" 'face 'shadow)
             "\n")
@@ -338,6 +363,32 @@ Failed tests are still rerun with logging enabled."
   (interactive)
   (my-projectile-tests--start-batch 'integration my-projectile-tests--project-root))
 
+(defun my-projectile-tests-abort ()
+  "Ask the current batch runner to kill its test processes and exit.
+In batch settings, target the most recently launched batch for the project.
+Keep the result buffer and report ABORTED only after the runner acknowledges."
+  (interactive)
+  (let* ((batch (if (derived-mode-p 'my-projectile-tests-settings-mode)
+                    my-projectile-tests--settings-batch
+                  my-projectile-tests--current-batch))
+         (process (and batch (my-projectile-tests--batch-process batch))))
+    (unless (and batch
+                 (not (my-projectile-tests--batch-finished batch))
+                 (not (my-projectile-tests--batch-cancelled batch))
+                 (process-live-p process))
+      (user-error "No batch is running in this buffer"))
+    (if (my-projectile-tests--batch-aborting batch)
+        (message "Abort already requested; waiting for runner acknowledgement")
+      (setf (my-projectile-tests--batch-aborting batch) t)
+      (condition-case err
+          (my-projectile-tests--send batch "abort")
+        (error
+         (setf (my-projectile-tests--batch-aborting batch) nil)
+         (user-error "Could not request batch abort: %s" (error-message-string err))))
+      (my-projectile-tests--render batch (my-projectile-tests--batch-finished batch))
+      (unless (my-projectile-tests--batch-finished batch)
+        (message "Aborting Projectile batch tests; waiting for runner acknowledgement")))))
+
 (define-key my-projectile-tests-settings-mode-map (kbd "s") #'my-projectile-tests--toggle-slow)
 (define-key my-projectile-tests-settings-mode-map (kbd "t") #'my-projectile-tests--set-threads)
 (define-key my-projectile-tests-settings-mode-map (kbd "f") #'my-projectile-tests--set-filter)
@@ -349,16 +400,19 @@ Failed tests are still rerun with logging enabled."
 (define-key my-projectile-tests-settings-mode-map (kbd "c") #'my-projectile-tests--toggle-disable-callstack-resolution)
 (define-key my-projectile-tests-settings-mode-map (kbd "u") #'my-projectile-tests--run-unit)
 (define-key my-projectile-tests-settings-mode-map (kbd "i") #'my-projectile-tests--run-integration)
+(define-key my-projectile-tests-settings-mode-map (kbd "<f8>") #'my-projectile-tests-abort)
 (define-key my-projectile-tests-settings-mode-map (kbd "q") #'quit-window)
 
 (define-derived-mode my-projectile-tests-mode special-mode "Projectile Tests"
   "Major mode for parallel Google Test results.
-Press TAB or RET on a failed test to expand its rerun logs."
+Press TAB or RET on a failed test to expand its rerun logs.
+Press F8 to abort the batch, keeping the results collected so far."
   (setq-local outline-regexp "^\\* ")
   (outline-minor-mode 1))
 
 (define-key my-projectile-tests-mode-map (kbd "TAB") #'outline-toggle-children)
 (define-key my-projectile-tests-mode-map (kbd "RET") #'outline-toggle-children)
+(define-key my-projectile-tests-mode-map (kbd "<f8>") #'my-projectile-tests-abort)
 
 (defun my-projectile-tests--delete-outdir (batch)
   "Delete BATCH's runner output directory if it still exists."
@@ -453,6 +507,15 @@ Press TAB or RET on a failed test to expand its rerun logs."
           (when-let* ((estimate (my-projectile-tests--batch-estimate batch)))
             (insert (propertize (format " (estimated %.2f)" estimate) 'face 'shadow))))
         (insert "\n")
+        (cond
+         ((my-projectile-tests--batch-aborted batch)
+          (insert (propertize "ABORTED: test processes stopped by the runner.\n"
+                              'face 'warning)))
+         ((my-projectile-tests--batch-aborting batch)
+          (insert (propertize "Aborting; waiting for runner acknowledgement...\n"
+                              'face 'warning)))
+         ((not final)
+          (insert (propertize "F8: abort this batch\n" 'face 'shadow))))
         (when (or (> (my-projectile-tests--batch-gtest-repeat batch) 1)
                   (> (my-projectile-tests--batch-repeat batch) 1))
           (insert (format "Repeats: %d within each process, %d parallel iterations per test\n"
@@ -465,7 +528,8 @@ Press TAB or RET on a failed test to expand its rerun logs."
                 (insert (format "%d %s on %d logical CPUs\n"
                                 threads (if (= threads 1) "thread" "threads")
                                 (my-projectile-tests--batch-cpus batch)))
-              (insert (if (my-projectile-tests--batch-errors batch)
+              (insert (if (or (my-projectile-tests--batch-errors batch)
+                              (my-projectile-tests--batch-aborted batch))
                           "No tests ran\n"
                         "No tests matched the batch settings\n")))
           (insert (cond
@@ -515,7 +579,12 @@ Press TAB or RET on a failed test to expand its rerun logs."
                     error-text "\n")))
         (goto-char (point-min))
         (when final
-          (outline-hide-body))))))
+          (outline-hide-body)))))
+  (when-let* ((settings (my-projectile-tests--batch-settings-buffer batch))
+              ((buffer-live-p settings)))
+    (with-current-buffer settings
+      (when (eq my-projectile-tests--settings-batch batch)
+        (my-projectile-tests--render-settings)))))
 
 (defun my-projectile-tests--send (batch &rest fields)
   "Send the runner command made of FIELDS to BATCH's runner."
@@ -532,16 +601,18 @@ Its log files remain until the result buffer is killed or reused."
   (unless (my-projectile-tests--batch-finished batch)
     (setf (my-projectile-tests--batch-elapsed batch)
           (float-time (time-since (my-projectile-tests--batch-start-time batch)))
-          (my-projectile-tests--batch-finished batch) t)
+          (my-projectile-tests--batch-finished batch) t
+          (my-projectile-tests--batch-aborting batch) nil)
     (let ((process (my-projectile-tests--batch-process batch)))
-      (when (process-live-p process)
+      (when (and (not (my-projectile-tests--batch-aborted batch))
+                 (process-live-p process))
         (ignore-errors (process-send-string process (if stop "stop\n" "quit\n")))))
     (my-projectile-tests--render batch t)
-    (if (my-projectile-tests--batch-errors batch)
-        (message "Projectile batch tests finished with errors; see %s"
-                 (buffer-name (my-projectile-tests--batch-buffer batch)))
-      (message "Projectile batch tests finished; see %s"
-               (buffer-name (my-projectile-tests--batch-buffer batch))))))
+    (message "Projectile batch tests %s; see %s"
+             (cond ((my-projectile-tests--batch-aborted batch) "ABORTED")
+                   ((my-projectile-tests--batch-errors batch) "finished with errors")
+                   (t "finished"))
+             (buffer-name (my-projectile-tests--batch-buffer batch)))))
 
 (defun my-projectile-tests--log-text (path &optional full)
   "Return the log file at PATH preceded by its name.
@@ -675,8 +746,9 @@ is the reason the runner could not start the process."
     (puthash name (if original (concat original "\nDiagnostic rerun:\n" text) text)
              (my-projectile-tests--batch-logs batch)))
   (cl-incf (my-projectile-tests--batch-reruns-done batch))
-  (if (= (my-projectile-tests--batch-reruns-done batch)
-         (my-projectile-tests--batch-reruns-total batch))
+  (if (and (not (my-projectile-tests--batch-aborting batch))
+           (= (my-projectile-tests--batch-reruns-done batch)
+              (my-projectile-tests--batch-reruns-total batch)))
       (my-projectile-tests--finish batch)
     (my-projectile-tests--render batch)))
 
@@ -720,7 +792,18 @@ is the reason the runner could not start the process."
      (my-projectile-tests--chunk-finished
       batch names (string-to-number iteration) -1 nil nil message))
     (`("run-finished")
-     (my-projectile-tests--start-reruns batch))
+     (unless (my-projectile-tests--batch-aborting batch)
+       (my-projectile-tests--start-reruns batch)))
+    (`("aborted")
+     (setf (my-projectile-tests--batch-aborted batch) t
+           (my-projectile-tests--batch-tests batch)
+           (or (my-projectile-tests--batch-tests batch)
+               (nreverse (my-projectile-tests--batch-discovering batch)))
+           (my-projectile-tests--batch-discovering batch) nil)
+     (dolist (test (my-projectile-tests--batch-tests batch))
+       (unless (gethash test (my-projectile-tests--batch-results batch))
+         (puthash test 'not-run (my-projectile-tests--batch-results batch))))
+     (my-projectile-tests--finish batch))
     (`("rerun-done" ,id ,exit ,log)
      (my-projectile-tests--rerun-finished
       batch id (format "Rerun exit status: %s\n%s"
@@ -736,7 +819,8 @@ is the reason the runner could not start the process."
                    message (if (string-empty-p log) ""
                              (my-projectile-tests--log-text log)))
            (my-projectile-tests--batch-errors batch))
-     (my-projectile-tests--finish batch t))
+     (unless (my-projectile-tests--batch-aborting batch)
+       (my-projectile-tests--finish batch t)))
     (`("error" ,message)
      (push (format "emacs-test-runner: %s" message)
            (my-projectile-tests--batch-errors batch))
@@ -771,7 +855,11 @@ is the reason the runner could not start the process."
     (let ((batch (process-get process 'my-projectile-tests--batch)))
       (unless (or (my-projectile-tests--batch-finished batch)
                   (my-projectile-tests--batch-cancelled batch))
-        (push (format "emacs-test-runner exited unexpectedly: %s" (string-trim event))
+        (push (format "emacs-test-runner %s: %s"
+                      (if (my-projectile-tests--batch-aborting batch)
+                          "exited before acknowledging abort"
+                        "exited unexpectedly")
+                      (string-trim event))
               (my-projectile-tests--batch-errors batch))
         (my-projectile-tests--finish batch t)))))
 
@@ -845,6 +933,8 @@ is the reason the runner could not start the process."
                        (expand-file-name
                         (read-file-name "Google Test executable: " root nil t))))
          (buffer (get-buffer-create (format "*Projectile %s batch tests*" kind)))
+         (settings-buffer (when (derived-mode-p 'my-projectile-tests-settings-mode)
+                            (current-buffer)))
          (batch (make-my-projectile-tests--batch
                  :kind kind :root root :executable executable
                  :flags (when tnt
@@ -853,7 +943,7 @@ is the reason the runner could not start the process."
                              '("-disableLogs"))
                            (when (my-projectile-tests--setting :disable-callstack-resolution t)
                              '("-disableCallstackResolution"))))
-                 :buffer buffer :cpus (num-processors)
+                 :buffer buffer :settings-buffer settings-buffer :cpus (num-processors)
                  :thread-limit (or (plist-get settings :threads)
                                    (my-projectile-tests--default-threads))
                  :exclude-slow (my-projectile-tests--setting :exclude-slow t)
@@ -879,6 +969,9 @@ is the reason the runner could not start the process."
       (my-projectile-tests-mode)
       (setq my-projectile-tests--current-batch batch)
       (add-hook 'kill-buffer-hook #'my-projectile-tests--cancel nil t))
+    (when settings-buffer
+      (with-current-buffer settings-buffer
+        (setq my-projectile-tests--settings-batch batch)))
     (my-projectile-tests--render batch)
     (pop-to-buffer buffer)
     (setf (my-projectile-tests--batch-start-time batch) (current-time))
@@ -889,6 +982,19 @@ is the reason the runner could not start the process."
              (my-projectile-tests--batch-errors batch))
        (my-projectile-tests--finish batch t)))
     batch))
+
+(defun my-projectile-tests--project-batch (root)
+  "Return the most recently started batch with a result buffer for ROOT."
+  (let (latest)
+    (dolist (buffer (buffer-list))
+      (when-let* ((batch (buffer-local-value 'my-projectile-tests--current-batch buffer)))
+        (when (and (equal root (my-projectile-tests--batch-root batch))
+                   (my-projectile-tests--batch-start-time batch)
+                   (or (null latest)
+                       (time-less-p (my-projectile-tests--batch-start-time latest)
+                                    (my-projectile-tests--batch-start-time batch))))
+          (setq latest batch))))
+    latest))
 
 (defun my-projectile-test-project-batch (&optional kind)
   "Open batch settings for the current project.
@@ -912,6 +1018,8 @@ Batches run through emacs-test-runner, which must be built first
 (see README.md).
 Failed cases are rerun with logging enabled; press TAB on a failure in
 the result buffer to inspect its logs.
+Press F8 in settings or results to abort the current run.  The runner stops
+its test processes and acknowledges the abort before Emacs reports ABORTED.
 When called with KIND from Lisp, run that kind directly."
   (interactive)
   (let ((root (projectile-acquire-root)))
@@ -923,6 +1031,10 @@ When called with KIND from Lisp, run that kind directly."
         (with-current-buffer buffer
           (my-projectile-tests-settings-mode)
           (setq my-projectile-tests--project-root root)
+          (setq my-projectile-tests--settings-batch (my-projectile-tests--project-batch root))
+          (when my-projectile-tests--settings-batch
+            (setf (my-projectile-tests--batch-settings-buffer my-projectile-tests--settings-batch)
+                  buffer))
           (my-projectile-tests--render-settings))
         (pop-to-buffer buffer)))))
 
