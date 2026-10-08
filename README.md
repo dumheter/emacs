@@ -107,6 +107,9 @@ Copy `en_US.aff` and `en_US.dic` to `C:/Hunspell`.
 
 ### Large files and Copilot
 
+Emacs asks for confirmation before opening files larger than 100 MiB
+(104,857,600 bytes).
+
 On DICE machines, Copilot is disabled in buffers larger than 1 MiB
 (1,048,576 bytes), including when an edit grows a buffer past that limit.
 Smaller buffers keep automatic completions. After shrinking an oversized
