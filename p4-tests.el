@@ -95,6 +95,253 @@
         (kill-buffer p4--diff-patience-buffer-name))
       (delete-file file))))
 
+(defun p4-tests--wait-for (predicate)
+  "Wait at most ten seconds for PREDICATE to become non-nil."
+  (let ((deadline (+ (float-time) 10)))
+    (while (and (not (funcall predicate)) (< (float-time) deadline))
+      (accept-process-output nil 0.05))
+    (should (funcall predicate))))
+
+(defmacro p4-tests--with-status-client (responses &rest body)
+  "Run BODY with an isolated fake P4 client using RESPONSES.
+Each response maps a P4 command to Lisp evaluated in a child Emacs.
+COMMANDS records arguments and filename lists; PROCESSES records children."
+  (declare (indent 1))
+  `(let ((p4-executable (expand-file-name invocation-name invocation-directory))
+         (p4-do-find-file t)
+         (p4-update-status-pending-alist nil)
+         (p4-update-status-timeout 600)
+         (p4-status-command-timeout 3)
+         (p4-update-status-process-buffer " *P4 test update status*")
+         (responses ,responses)
+         (make-process-function (symbol-function 'make-process))
+         commands processes)
+     (cl-letf (((symbol-function 'p4-call-process)
+                (lambda (&rest _)
+                  (error "Automatic status must not call P4 synchronously")))
+               ((symbol-function 'process-send-string)
+                (lambda (&rest _)
+                  (error "Automatic status must not write into process pipes")))
+               ((symbol-function 'make-process)
+                (lambda (&rest args)
+                  (let ((process (apply make-process-function args)))
+                    (push process processes)
+                    process))))
+       (let ((p4-modify-args-function
+              (lambda (args)
+                (push (cons args
+                            (when (member "-x" args)
+                              (with-temp-buffer
+                                (insert-file-contents (nth 2 args))
+                                (buffer-string))))
+                      commands)
+                (list "--batch" "-Q" "--eval"
+                      (or (cdr (assoc (car (last args)) responses))
+                          (error "Unexpected P4 command: %S" args))))))
+         (unwind-protect
+             (progn ,@body)
+           (setq p4-do-find-file nil
+                 p4-update-status-pending-alist nil)
+           (dolist (process processes)
+             (when (process-live-p process) (delete-process process))
+             (when (buffer-live-p (process-buffer process))
+               (kill-buffer (process-buffer process)))))))))
+
+(ert-deftest p4-test-status-settings-are-asynchronous ()
+  (p4-tests--with-status-client
+      '(("set" . "(princ \"P4PORT=test:1666\\nP4CHARSET=utf8 (set)\\n\")")
+        ("opened" . "(princ \"info: //depot/test.txt#3 - edit change 42 (text)\\n\")"))
+    (with-temp-buffer
+      (setq buffer-file-name (expand-file-name "test.txt"))
+      (p4-update-status)
+      (should (process-live-p p4--status-settings-process))
+      (insert "Still editable\n")
+      (p4-tests--wait-for (lambda () (eq p4-vc-status 'edit)))
+      (should (= p4-vc-revision 3))
+      (should-not p4--status-settings-process)
+      (should-not p4-update-status-pending-alist)
+      (should (equal (mapcar (lambda (entry) (car (last (car entry))))
+                            (reverse commands))
+                     '("set" "opened")))
+      (should (equal (cdr (car commands))
+                     (concat buffer-file-name "\n")))
+      (should-not (file-exists-p (nth 2 (caar commands)))))))
+
+(ert-deftest p4-test-status-hung-settings-do-not-block ()
+  (p4-tests--with-status-client '(("set" . "(sleep-for 60)"))
+    (let ((p4-status-command-timeout 0.3)
+          (ticks 0)
+          timer)
+      (unwind-protect
+          (with-temp-buffer
+            (setq buffer-file-name (expand-file-name "merged-result.txt"))
+            (setq timer (run-at-time 0 0.02 (lambda () (cl-incf ticks))))
+            (p4-update-status)
+            (should (process-live-p p4--status-settings-process))
+            (insert "Merged result remains editable\n")
+            (p4-tests--wait-for (lambda () (not p4--status-settings-process)))
+            (should (> ticks 0))
+            (should-not p4-update-status-pending-alist)
+            (should (process-get (car processes) 'p4-status-timed-out))
+            (should-not (process-live-p (car processes)))
+            (should-not (buffer-live-p (process-buffer (car processes)))))
+        (when timer (cancel-timer timer))))))
+
+(ert-deftest p4-test-status-opening-merged-result-does-not-wait ()
+  (p4-tests--with-status-client '(("set" . "(sleep-for 60)"))
+    (let ((p4-status-command-timeout 1)
+          (file (make-temp-file "p4-merged-result-"))
+          buffer)
+      (unwind-protect
+          (progn
+            (setq buffer (find-file-noselect file))
+            (with-current-buffer buffer
+              (should (process-live-p p4--status-settings-process))
+              (insert "Resolved merge\n")
+              (p4-tests--wait-for (lambda () (not p4--status-settings-process)))
+              (should (equal (buffer-string) "Resolved merge\n"))
+              (should-not p4-vc-status))
+            (should (process-get (car processes) 'p4-status-timed-out)))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer (set-buffer-modified-p nil))
+          (kill-buffer buffer))
+        (delete-file file)))))
+
+(ert-deftest p4-test-status-opened-and-have-use-filename-files ()
+  (p4-tests--with-status-client
+      '(("opened" . "(progn (princ \"info: //depot/edited.txt#3 - edit change 42 (text)\\nerror: synced.txt - file(s) not opened on this client.\\n\") (kill-emacs 1))")
+        ("have" . "(princ \"info: //depot/synced.txt#7 - synced.txt\\n\")"))
+    (let ((edited (generate-new-buffer " *P4 test edited*"))
+          (synced (generate-new-buffer " *P4 test synced*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer edited
+              (setq buffer-file-name (expand-file-name "edited.txt")))
+            (with-current-buffer synced
+              (setq buffer-file-name (expand-file-name "synced.txt")))
+            (setq p4-update-status-pending-alist
+                  (list (list "P4CHARSET=utf8 (set)\n" (seconds-to-time 0)
+                              (list edited synced))))
+            (p4-maybe-start-update-statuses)
+            (p4-tests--wait-for
+             (lambda () (eq (buffer-local-value 'p4-vc-status synced) 'sync)))
+            (should (eq (buffer-local-value 'p4-vc-status edited) 'edit))
+            (should (= (buffer-local-value 'p4-vc-revision edited) 3))
+            (should (= (buffer-local-value 'p4-vc-revision synced) 7))
+            (should-not p4-update-status-pending-alist)
+            (should (= (length commands) 2))
+            (dolist (entry commands)
+              (should (equal (cl-subseq (car entry) 0 2) '("-s" "-x")))
+              (should-not (equal (nth 2 (car entry)) "-"))
+              (should-not (file-exists-p (nth 2 (car entry)))))
+            (should (equal (cdr (car commands))
+                           (concat (buffer-file-name synced) "\n")))
+            (should (equal (cdr (cadr commands))
+                           (concat (buffer-file-name edited) "\n"
+                                   (buffer-file-name synced) "\n"))))
+        (kill-buffer edited)
+        (kill-buffer synced)))))
+
+(ert-deftest p4-test-status-hung-queries-keep-delayed-retries ()
+  (dolist (command '("opened" "have"))
+    (p4-tests--with-status-client
+        `(("opened" . ,(if (equal command "opened")
+                          "(sleep-for 60)"
+                        "(princ \"error: merged.txt - file(s) not opened on this client.\\n\")"))
+          ("have" . "(sleep-for 60)"))
+      (let ((p4-status-command-timeout
+             (if (equal command "opened") 0.3 3)))
+        (with-temp-buffer
+          (setq buffer-file-name (expand-file-name "merged.txt"))
+          (setq p4-update-status-pending-alist
+                (list (list "" (seconds-to-time 0) (list (current-buffer)))))
+          (p4-maybe-start-update-statuses)
+          (setq p4-status-command-timeout 0.3)
+          (p4-tests--wait-for
+           (lambda ()
+             (and (process-get (car processes) 'p4-status-timed-out)
+                  (not (process-live-p (car processes))))))
+          (should (equal (car (last (caar commands))) command))
+          (should (equal (cl-third (car p4-update-status-pending-alist))
+                         (list (current-buffer))))
+          (should-not p4-vc-status)
+          (should-not (get-buffer p4-update-status-process-buffer))
+          (dolist (entry commands)
+            (should-not (file-exists-p (nth 2 (car entry)))))
+          (let ((count (length commands)))
+            (p4-maybe-start-update-statuses)
+            (should (= (length commands) count))))))))
+
+(ert-deftest p4-test-status-settings-cancel-on-buffer-kill ()
+  (p4-tests--with-status-client '(("set" . "(sleep-for 60)"))
+    (let ((buffer (generate-new-buffer " *P4 test merged result*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buffer
+              (setq buffer-file-name (expand-file-name "merged-result.txt"))
+              (p4-update-status))
+            (should (process-live-p (car processes)))
+            (kill-buffer buffer)
+            (should-not (process-live-p (car processes)))
+            (should-not (buffer-live-p (process-buffer (car processes))))
+            (should-not p4-update-status-pending-alist))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest p4-test-status-settings-ignore-renamed-buffer ()
+  (p4-tests--with-status-client
+      '(("set" . "(princ \"P4PORT=test:1666\\n\")"))
+    (with-temp-buffer
+      (setq buffer-file-name (expand-file-name "old.txt"))
+      (p4-update-status)
+      (setq buffer-file-name (expand-file-name "new.txt"))
+      (p4-tests--wait-for (lambda () (not p4--status-settings-process)))
+      (should-not p4-update-status-pending-alist)
+      (should (= (length commands) 1)))))
+
+(ert-deftest p4-test-status-start-failure-cleans-filename-file ()
+  (p4-tests--with-status-client '(("opened" . "(sleep-for 60)"))
+    (let ((p4-executable (expand-file-name "nonexistent-p4-client")))
+      (with-temp-buffer
+        (setq buffer-file-name (expand-file-name "merged.txt"))
+        (setq p4-update-status-pending-alist
+              (list (list "" (seconds-to-time 0) (list (current-buffer)))))
+        (p4-maybe-start-update-statuses)
+        (should-not processes)
+        (should-not (get-buffer p4-update-status-process-buffer))
+        (should (= (length commands) 1))
+        (should-not (file-exists-p (nth 2 (caar commands))))
+        (should (equal (cl-third (car p4-update-status-pending-alist))
+                       (list (current-buffer))))))))
+
+(ert-deftest p4-test-status-setup-failure-stops-created-process ()
+  (p4-tests--with-status-client '(("opened" . "(sleep-for 60)"))
+    (cl-letf (((symbol-function 'process-send-eof)
+               (lambda (&rest _) (error "Fake EOF failure"))))
+      (with-temp-buffer
+        (setq buffer-file-name (expand-file-name "merged.txt"))
+        (setq p4-update-status-pending-alist
+              (list (list "" (seconds-to-time 0) (list (current-buffer)))))
+        (p4-maybe-start-update-statuses)
+        (should (= (length processes) 1))
+        (should-not (process-live-p (car processes)))
+        (should-not (get-buffer p4-update-status-process-buffer))
+        (should-not (file-exists-p (nth 2 (caar commands))))
+        (should-not (memq (process-get (car processes) 'p4-status-timer)
+                          timer-list))))))
+
+(ert-deftest p4-test-status-forced-refresh-cancels-old-settings ()
+  (p4-tests--with-status-client '(("set" . "(sleep-for 60)"))
+    (with-temp-buffer
+      (setq buffer-file-name (expand-file-name "merged.txt"))
+      (p4-update-status)
+      (let ((old p4--status-settings-process))
+        (p4-update-status t)
+        (should-not (process-live-p old))
+        (should-not (buffer-live-p (process-buffer old)))
+        (should (process-live-p p4--status-settings-process))
+        (should-not (eq old p4--status-settings-process))
+        (should-not p4-update-status-pending-alist)))))
+
 (provide 'p4-tests)
 
 ;;; p4-tests.el ends here

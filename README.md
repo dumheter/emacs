@@ -129,6 +129,29 @@ changes; symbol highlights remain visible. Use `C-c l h` to request hover
 immediately. C and C++ buffers also highlight symbol references and show
 breadcrumbs.
 
+### Perforce and merged results
+
+Automatic P4 status checks when opening files (including merged results from
+a Perforce resolve) run entirely in the background. Settings lookup, `opened`,
+and `have` each have an eight-second limit, configurable with
+`p4-status-command-timeout`. Filename batches are passed through temporary
+files, not potentially blocking Windows process-pipe writes. Failed status
+queries remain pending and use the existing ten-minute retry delay; failures
+are reported in `*Messages*`.
+
+The TnT P4 gutter separately uses asynchronous `fstat`/`print` requests with
+`p4-gutter-p4-timeout` (eight seconds by default), then compares edits locally
+with Git. Its timeout message reports a background failure, not a synchronous
+wait.
+Explicit interactive commands in the older P4 integration can still run
+synchronously; these automatic-status safeguards do not change them.
+
+Run the P4 regression tests without contacting a Perforce server:
+
+```powershell
+emacs --batch -Q -L local-packages -l p4-tests.el -f ert-run-tests-batch-and-exit
+```
+
 ### DDF
 
 Opening a `.ddf` file selects `ddf-ts-mode` from `local-packages/`. It uses

@@ -173,6 +173,13 @@ mode line."
   :type 'boolean
   :group 'p4)
 
+(defcustom p4-status-command-timeout 8
+  "Seconds before an automatic Perforce status command is terminated.
+This includes settings lookup when opening a file.  Explicit interactive
+Perforce commands are unaffected."
+  :type 'number
+  :group 'p4)
+
 (defcustom p4-cleanup-time 600
   "Time in seconds after which a cache of information from the
 Perforce server becomes stale."
@@ -600,12 +607,15 @@ client settings."
     (nil           . utf-8))
   "Association list mapping P4CHARSET to Emacs coding system.")
 
-(defun p4-coding-system ()
-  "Return an Emacs coding system equivalent to P4CHARSET."
-  (let* ((charset (p4-current-setting "P4CHARSET"))
-         (c (assoc charset p4-coding-system-alist)))
+(defun p4--coding-system-for-charset (charset)
+  "Return the Emacs coding system for Perforce CHARSET."
+  (let ((c (assoc charset p4-coding-system-alist)))
     (if c (cdr c)
       (error "Coding system %s not available in Emacs" charset))))
+
+(defun p4-coding-system ()
+  "Return an Emacs coding system equivalent to P4CHARSET."
+  (p4--coding-system-for-charset (p4-current-setting "P4CHARSET")))
 
 (defun p4-set-process-coding-system (process)
   "Set coding systems of PROCESS appropriately."
@@ -1315,6 +1325,117 @@ updating.")
 (defvar p4-update-status-timeout 600
   "Retry a status update on a Perforce server after this many seconds.")
 
+(defvar-local p4--status-settings-process nil
+  "Asynchronous settings lookup for the current buffer.")
+
+(defun p4--status-coding-system (settings)
+  "Return the coding system from previously fetched SETTINGS."
+  (p4--coding-system-for-charset
+   (when (and settings
+              (string-match "^P4CHARSET=\\([^ \r\n]+\\)" settings))
+     (match-string 1 settings))))
+
+(defun p4--status-process-timeout (process)
+  "Terminate an unresponsive background status PROCESS."
+  (when (process-live-p process)
+    (process-put process 'p4-status-timed-out t)
+    (delete-process process)))
+
+(defun p4--status-process-sentinel (process event)
+  "Clean up a completed status PROCESS and dispatch EVENT."
+  (when (and (memq (process-status process) '(exit signal failed))
+             (not (process-get process 'p4-status-finished)))
+    (process-put process 'p4-status-finished t)
+    (when-let* ((timer (process-get process 'p4-status-timer)))
+      (cancel-timer timer))
+    (when-let* ((input (process-get process 'p4-status-input-file)))
+      (condition-case err
+          (delete-file input)
+        (file-error
+         (message "P4 background status could not remove %s: %s"
+                  input (error-message-string err)))))
+    (condition-case err
+        (funcall (process-get process 'p4-status-sentinel) process event)
+      (error
+       (when (buffer-live-p (process-buffer process))
+         (kill-buffer (process-buffer process)))
+       (message "P4 background status failed: %s"
+                (error-message-string err))))))
+
+(defun p4--start-status-process (args sentinel &optional settings input-file)
+  "Start a bounded status command with ARGS in the current buffer.
+SENTINEL handles completion.  SETTINGS supplies the cached character set.
+INPUT-FILE is a temporary filename list deleted when the command finishes."
+  (let (process)
+    (condition-case err
+        (progn
+          (setq process
+                (make-process
+                 :name "P4 background status"
+                 :buffer (current-buffer)
+                 :command (cons (p4-executable)
+                                (funcall p4-modify-args-function args))
+                 :connection-type 'pipe
+                 :coding (p4--status-coding-system settings)
+                 :noquery t
+                 :sentinel #'p4--status-process-sentinel))
+          (process-put process 'p4-status-sentinel sentinel)
+          (process-put process 'p4-status-input-file input-file)
+          (process-put process 'p4-status-timer
+                       (run-at-time p4-status-command-timeout nil
+                                    #'p4--status-process-timeout process))
+          (when (process-live-p process)
+            (process-send-eof process))
+          process)
+      (error
+       (when (processp process)
+         (set-process-sentinel process #'ignore)
+         (when-let* ((timer (process-get process 'p4-status-timer)))
+           (cancel-timer timer))
+         (when (process-live-p process) (delete-process process)))
+       (when (and input-file (file-exists-p input-file))
+         (delete-file input-file))
+       (signal (car err) (cdr err))))))
+
+(defun p4--start-status-query (command buffers pending sentinel)
+  "Start COMMAND for BUFFERS belonging to PENDING, using SENTINEL."
+  (let ((input (make-temp-file "p4-status-files-"))
+        (settings (cl-first pending))
+        started)
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write (p4--status-coding-system settings))
+                (write-region-inhibit-fsync t))
+            (with-temp-file input
+              (dolist (buffer buffers)
+                (insert (p4-buffer-file-name buffer) "\n"))))
+          (setq p4-process-buffers (copy-sequence buffers)
+                p4-process-pending pending)
+          ;; Windows pipe writes can wait indefinitely when P4 stops reading.
+          (p4--start-status-process
+           (list "-s" "-x" input command) sentinel settings input)
+          (setq started t))
+      (unless started
+        (when (file-exists-p input)
+          (delete-file input))))))
+
+(defun p4--status-process-failed-p (process &optional allow-exit-one)
+  "Report whether an automatic status PROCESS failed.
+ALLOW-EXIT-ONE permits `opened' to report files that are not open."
+  (cond
+   ((process-get process 'p4-status-timed-out)
+    (message "P4 background status timed out after %s seconds"
+             p4-status-command-timeout)
+    t)
+   ((or (not (eq (process-status process) 'exit))
+        (not (or (zerop (process-exit-status process))
+                 (and allow-exit-one (= (process-exit-status process) 1)))))
+    (message "P4 background status failed: %s"
+             (with-current-buffer (process-buffer process)
+               (buffer-substring-no-properties
+                (point-min) (min (point-max) (+ (point-min) 300)))))
+    t)))
+
 (defun p4-update-status-pending-add (set buffer &optional force)
   "Add BUFFER to the set of pending updates for the Perforce settings SET.
 If optional argument FORCE is non-NIL, reset the update timeout
@@ -1366,56 +1487,55 @@ number is not known or not applicable."
   (let ((buffer (process-buffer process)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (when (string-equal message "finished\n")
+        (when (and (not (p4--status-process-failed-p process))
+                   (string-equal message "finished\n"))
           (goto-char (point-min))
           (while (not (eobp))
             (let ((b (pop p4-process-buffers)))
               (cond ((looking-at "^info: //[^#\n]+#\\([1-9][0-9]*\\) - ")
                      (p4-update-mode b 'sync
                                      (string-to-number (match-string 1))))
-                    (t (p4-update-mode b nil nil))))
+                    (t (p4-update-mode b nil nil)))
+              (setf (cl-third p4-process-pending)
+                    (remove b (cl-third p4-process-pending))))
             (forward-line 1)))
         (kill-buffer (current-buffer))
         (p4-maybe-start-update-statuses)))))
 
-(defun p4-update-status-sentinel-1 (process message)
+(defun p4-update-status-sentinel-1 (process _message)
   ;; Don't check (string= message "finished\n"): "p4 opened" exits
   ;; with status 1 if asked to determine the status of a file outside
   ;; the workspace root, but we still want to process the output in
   ;; that case.
-  ;;
-  ;; If user is logged out, or p4-executable wrongly configured, don't
-  ;; spam user with errors, just quietly ignore. When they log in or
-  ;; fix the configuration, the update process will restart.
-  (let (have-buffers (buffer (process-buffer process)))
+  (let (have-buffers unrecognized-output (buffer (process-buffer process)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (goto-char (point-min))
-        (while (not (eobp))
-          (let ((b (pop p4-process-buffers))
-                (processed t))
-            (cond ((looking-at "^info: //[^#\n]+#\\([1-9][0-9]*\\) - \\(\\(?:move/\\)?add\\|branch\\|\\(?:move/\\)?delete\\|edit\\|integrate\\) ")
-                   (p4-update-mode b (intern (match-string 2))
-                                   (string-to-number (match-string 1))))
-                  ((looking-at "^error: .* - file(s) not opened on this client")
-                   (push b have-buffers))
-                  (t (setq processed nil)))
-            (when processed
-              (setf (cl-third p4-process-pending)
-                    (remove b (cl-third p4-process-pending)))))
-          (forward-line 1))
+        (unless (p4--status-process-failed-p process t)
+          (goto-char (point-min))
+          (while (not (eobp))
+            (let ((b (pop p4-process-buffers))
+                  (processed t))
+              (cond ((looking-at "^info: //[^#\n]+#\\([1-9][0-9]*\\) - \\(\\(?:move/\\)?add\\|branch\\|\\(?:move/\\)?delete\\|edit\\|integrate\\) ")
+                     (p4-update-mode b (intern (match-string 2))
+                                     (string-to-number (match-string 1))))
+                    ((looking-at "^error: .* - file(s) not opened on this client")
+                     (push b have-buffers)
+                     (setq processed nil))
+                    (t (setq processed nil
+                             unrecognized-output t)))
+              (when processed
+                (setf (cl-third p4-process-pending)
+                      (remove b (cl-third p4-process-pending)))))
+            (forward-line 1))
+          (when unrecognized-output
+            (message "P4 background status could not determine file status: %s"
+                     (buffer-substring-no-properties
+                      (point-min) (min (point-max) (+ (point-min) 300))))))
         (erase-buffer)
         (if (and p4-executable have-buffers)
-            (let ((process (p4-start-process "P4" (current-buffer)
-                                             "-s" "-x" "-" "have")))
-              (setq p4-process-buffers have-buffers)
-              (set-process-query-on-exit-flag process nil)
-              (set-process-sentinel process 'p4-update-status-sentinel-2)
-              (p4-set-process-coding-system process)
-              (cl-loop for b in have-buffers
-                    do (process-send-string process (p4-buffer-file-name b))
-                    do (process-send-string process "\n"))
-              (process-send-eof process))
+            (p4--start-status-query
+             "have" have-buffers p4-process-pending
+             #'p4-update-status-sentinel-2)
           (kill-buffer (current-buffer))
           (p4-maybe-start-update-statuses))))))
 
@@ -1443,17 +1563,20 @@ an update is running already."
           (setq default-directory
                 (with-current-buffer (car buffers)
                   (or p4-default-directory default-directory)))
-          (let ((process (p4-start-process "P4" (current-buffer)
-                                           "-s" "-x" "-" "opened")))
-            (set-process-query-on-exit-flag process nil)
-            (set-process-sentinel process 'p4-update-status-sentinel-1)
-            (p4-set-process-coding-system process)
-            (setq p4-process-buffers (copy-sequence buffers))
-            (setq p4-process-pending pending)
-            (cl-loop for b in buffers
-                  do (process-send-string process (p4-buffer-file-name b))
-                  do (process-send-string process "\n"))
-            (process-send-eof process)))))))
+          (condition-case err
+              (p4--start-status-query
+               "opened" buffers pending #'p4-update-status-sentinel-1)
+            (error
+             (kill-buffer (current-buffer))
+             (message "P4 background status could not start: %s"
+                      (error-message-string err)))))))))
+
+(defun p4--cancel-status-settings ()
+  "Cancel the current buffer's background settings lookup."
+  (let ((process p4--status-settings-process))
+    (setq p4--status-settings-process nil)
+    (when (and (processp process) (process-live-p process))
+      (delete-process process))))
 
 (defun p4-update-status (&optional force)
   "Start an asynchronous update of the Perforce status of the
@@ -1463,14 +1586,45 @@ set in this buffer, `p4-mode' will be set appropriately, and if
 `p4-mode' is turned on, then `p4-mode-hook' will be run.
 If optional argument FORCE is non-NIL, reset the update timeout
 for the current Perforce settings."
-  (let ((b (current-buffer)))
+  (let ((b (current-buffer))
+        (file buffer-file-name)
+        (directory default-directory)
+        (environment process-environment))
     (when (and p4-executable p4-do-find-file buffer-file-name
                (not p4-default-directory)
                (file-accessible-directory-p default-directory))
-      (p4-with-set-output
-        (let ((set (buffer-substring-no-properties (point-min) (point-max))))
-          (p4-update-status-pending-add set b force)))
-      (p4-maybe-start-update-statuses))))
+      (when force (p4--cancel-status-settings))
+      (unless (and (processp p4--status-settings-process)
+                   (process-live-p p4--status-settings-process))
+        (add-hook 'kill-buffer-hook #'p4--cancel-status-settings nil t)
+        (let ((output (generate-new-buffer " *P4 status settings*")))
+          (condition-case err
+              (setq p4--status-settings-process
+                    (with-current-buffer output
+                      (setq default-directory directory)
+                      (let ((process-environment environment))
+                        (p4--start-status-process
+                         '("set")
+                         (lambda (process _event)
+                           (unwind-protect
+                               (when (buffer-live-p b)
+                                 (with-current-buffer b
+                                   (when (eq process p4--status-settings-process)
+                                     (setq p4--status-settings-process nil)
+                                     (when (and p4-do-find-file
+                                                (equal file buffer-file-name)
+                                                (not (p4--status-process-failed-p process)))
+                                       (p4-update-status-pending-add
+                                        (with-current-buffer output
+                                          (buffer-string))
+                                        b force)
+                                       (p4-maybe-start-update-statuses)))))
+                             (when (buffer-live-p output)
+                               (kill-buffer output))))))))
+            (error
+             (when (buffer-live-p output) (kill-buffer output))
+             (message "P4 background settings lookup could not start: %s"
+                      (error-message-string err)))))))))
 
 (defun p4-refresh-buffer (&optional force verify-modtime)
   "Refresh the current buffer if it is under Perforce control and
