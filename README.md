@@ -194,7 +194,7 @@ emacs --batch -Q -L local-packages -l local-packages\ddf-ts-mode-tests.el -f ert
   to TnT batches, and are saved across Emacs sessions with the other settings.
   Outside TnT it prompts for the Google Test executable. Failed tests are
   rerun with logging; press `TAB` on a failure to expand its log.
-- Press **F8** in settings or results to abort a run without closing either
+- Press **`a`** in settings or results to abort a run without closing either
   buffer; `q` still only closes the settings window. Settings target the most
   recently launched batch for that project; results target their own batch.
   Emacs shows **Aborting** while the runner kills its running test processes

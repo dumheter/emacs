@@ -138,7 +138,7 @@ l/c to toggle TnT's disableLogs/disableCallstackResolution flags, or u/i to run
 unit/integration tests with the displayed settings.
 Press g to set --gtest_repeat within each process, or p to set independent
 parallel repeats of each selected test.
-Press F8 to abort the most recently launched batch for this project.
+Press a to abort the most recently launched batch for this project.
 Default values are muted; active non-default values use the theme's
 warning face.  By default, SLOW tests are excluded and discovery is off.")
 
@@ -237,7 +237,7 @@ otherwise use the muted shadow face."
                         'face '(:inherit success :weight bold))
             "\n")
     (insert "\n  "
-            (propertize "[F8]  Abort current run" 'face 'warning)
+            (propertize "[a]  Abort current run" 'face 'warning)
             "\n")
     (when-let* ((batch my-projectile-tests--settings-batch))
       (insert "  "
@@ -400,19 +400,19 @@ Keep the result buffer and report ABORTED only after the runner acknowledges."
 (define-key my-projectile-tests-settings-mode-map (kbd "c") #'my-projectile-tests--toggle-disable-callstack-resolution)
 (define-key my-projectile-tests-settings-mode-map (kbd "u") #'my-projectile-tests--run-unit)
 (define-key my-projectile-tests-settings-mode-map (kbd "i") #'my-projectile-tests--run-integration)
-(define-key my-projectile-tests-settings-mode-map (kbd "<f8>") #'my-projectile-tests-abort)
+(define-key my-projectile-tests-settings-mode-map (kbd "a") #'my-projectile-tests-abort)
 (define-key my-projectile-tests-settings-mode-map (kbd "q") #'quit-window)
 
 (define-derived-mode my-projectile-tests-mode special-mode "Projectile Tests"
   "Major mode for parallel Google Test results.
 Press TAB or RET on a failed test to expand its rerun logs.
-Press F8 to abort the batch, keeping the results collected so far."
+Press a to abort the batch, keeping the results collected so far."
   (setq-local outline-regexp "^\\* ")
   (outline-minor-mode 1))
 
 (define-key my-projectile-tests-mode-map (kbd "TAB") #'outline-toggle-children)
 (define-key my-projectile-tests-mode-map (kbd "RET") #'outline-toggle-children)
-(define-key my-projectile-tests-mode-map (kbd "<f8>") #'my-projectile-tests-abort)
+(define-key my-projectile-tests-mode-map (kbd "a") #'my-projectile-tests-abort)
 
 (defun my-projectile-tests--delete-outdir (batch)
   "Delete BATCH's runner output directory if it still exists."
@@ -515,7 +515,7 @@ Press F8 to abort the batch, keeping the results collected so far."
           (insert (propertize "Aborting; waiting for runner acknowledgement...\n"
                               'face 'warning)))
          ((not final)
-          (insert (propertize "F8: abort this batch\n" 'face 'shadow))))
+          (insert (propertize "a: abort this batch\n" 'face 'shadow))))
         (when (or (> (my-projectile-tests--batch-gtest-repeat batch) 1)
                   (> (my-projectile-tests--batch-repeat batch) 1))
           (insert (format "Repeats: %d within each process, %d parallel iterations per test\n"
@@ -1018,7 +1018,7 @@ Batches run through emacs-test-runner, which must be built first
 (see README.md).
 Failed cases are rerun with logging enabled; press TAB on a failure in
 the result buffer to inspect its logs.
-Press F8 in settings or results to abort the current run.  The runner stops
+Press a in settings or results to abort the current run.  The runner stops
 its test processes and acknowledges the abort before Emacs reports ABORTED.
 When called with KIND from Lisp, run that kind directly."
   (interactive)

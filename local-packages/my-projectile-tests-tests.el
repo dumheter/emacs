@@ -348,10 +348,12 @@
    :tests '("Suite.Passed" "Suite.Pending") :start-time (current-time)))
 
 (ert-deftest my-projectile-tests-abort-keybindings ()
-  (should (eq (lookup-key my-projectile-tests-settings-mode-map (kbd "<f8>"))
+  (should (eq (lookup-key my-projectile-tests-settings-mode-map (kbd "a"))
               #'my-projectile-tests-abort))
-  (should (eq (lookup-key my-projectile-tests-mode-map (kbd "<f8>"))
+  (should (eq (lookup-key my-projectile-tests-mode-map (kbd "a"))
               #'my-projectile-tests-abort))
+  (should-not (lookup-key my-projectile-tests-settings-mode-map (kbd "<f8>")))
+  (should-not (lookup-key my-projectile-tests-mode-map (kbd "<f8>")))
   (should (eq (lookup-key my-projectile-tests-settings-mode-map (kbd "q"))
               #'quit-window)))
 
@@ -374,7 +376,7 @@
                     ((symbol-function 'process-send-string)
                      (lambda (&rest _) (ert-fail "Acknowledged abort sent another command"))))
             (with-current-buffer settings
-              (call-interactively (lookup-key (current-local-map) (kbd "<f8>"))))
+              (call-interactively (lookup-key (current-local-map) (kbd "a"))))
             (should (my-projectile-tests--batch-aborting batch))
             (should-not (my-projectile-tests--batch-finished batch))
             (should-not (my-projectile-tests--batch-aborted batch))
@@ -525,7 +527,7 @@
                           (< (float-time) deadline))
                 (accept-process-output process 0.05))
               (should (directory-files root nil "\\.child\\'"))
-              (call-interactively (lookup-key (current-local-map) (kbd "<f8>")))
+              (call-interactively (lookup-key (current-local-map) (kbd "a")))
               (while (and (or (not (my-projectile-tests--batch-finished batch))
                               (process-live-p process))
                           (< (float-time) deadline))
@@ -572,7 +574,7 @@
                           (buffer-local-value 'my-projectile-tests--current-batch latest)))
               (should (eq (my-projectile-tests--batch-settings-buffer
                            my-projectile-tests--settings-batch) settings))
-              (should (string-match-p "\\[F8\\]  Abort current run" (buffer-string))))))
+              (should (string-match-p "\\[a\\]  Abort current run" (buffer-string))))))
       (dolist (buffer (list old latest other settings))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
