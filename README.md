@@ -137,7 +137,8 @@ and `have` each have an eight-second limit, configurable with
 `p4-status-command-timeout`. Filename batches are passed through temporary
 files, not potentially blocking Windows process-pipe writes. Failed status
 queries remain pending and use the existing ten-minute retry delay; failures
-are reported in `*Messages*`.
+are reported in `*Messages*`. Files that are not checked out or not tracked
+are handled quietly.
 
 The TnT P4 gutter separately uses asynchronous `fstat`/`print` requests with
 `p4-gutter-p4-timeout` (eight seconds by default), then compares edits locally

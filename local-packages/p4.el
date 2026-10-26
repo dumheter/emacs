@@ -1421,7 +1421,7 @@ INPUT-FILE is a temporary filename list deleted when the command finishes."
 
 (defun p4--status-process-failed-p (process &optional allow-exit-one)
   "Report whether an automatic status PROCESS failed.
-ALLOW-EXIT-ONE permits `opened' to report files that are not open."
+ALLOW-EXIT-ONE permits status queries to report unopened or untracked files."
   (cond
    ((process-get process 'p4-status-timed-out)
     (message "P4 background status timed out after %s seconds"
@@ -1483,22 +1483,31 @@ number is not known or not applicable."
           (run-hooks 'p4-mode-hook))
         (setq p4-mode new-mode)))))
 
-(defun p4-update-status-sentinel-2 (process message)
-  (let ((buffer (process-buffer process)))
+(defun p4-update-status-sentinel-2 (process _message)
+  (let (unrecognized-output (buffer (process-buffer process)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (when (and (not (p4--status-process-failed-p process))
-                   (string-equal message "finished\n"))
+        (unless (p4--status-process-failed-p process t)
           (goto-char (point-min))
           (while (not (eobp))
-            (let ((b (pop p4-process-buffers)))
-              (cond ((looking-at "^info: //[^#\n]+#\\([1-9][0-9]*\\) - ")
-                     (p4-update-mode b 'sync
-                                     (string-to-number (match-string 1))))
-                    (t (p4-update-mode b nil nil)))
-              (setf (cl-third p4-process-pending)
-                    (remove b (cl-third p4-process-pending))))
-            (forward-line 1)))
+            (unless (looking-at "^exit: [01]\r?$")
+              (let ((b (pop p4-process-buffers))
+                    (processed t))
+                (cond ((looking-at "^info: //[^#\n]+#\\([1-9][0-9]*\\) - ")
+                       (p4-update-mode b 'sync
+                                       (string-to-number (match-string 1))))
+                      ((looking-at "^\\(?:error\\|warning\\): .* - file(s) not on client")
+                       (p4-update-mode b nil nil))
+                      (t (setq processed nil
+                               unrecognized-output t)))
+                (when processed
+                  (setf (cl-third p4-process-pending)
+                        (remove b (cl-third p4-process-pending))))))
+            (forward-line 1))
+          (when unrecognized-output
+            (message "P4 background status could not determine file status: %s"
+                     (buffer-substring-no-properties
+                      (point-min) (min (point-max) (+ (point-min) 300))))))
         (kill-buffer (current-buffer))
         (p4-maybe-start-update-statuses)))))
 
@@ -1513,19 +1522,20 @@ number is not known or not applicable."
         (unless (p4--status-process-failed-p process t)
           (goto-char (point-min))
           (while (not (eobp))
-            (let ((b (pop p4-process-buffers))
-                  (processed t))
-              (cond ((looking-at "^info: //[^#\n]+#\\([1-9][0-9]*\\) - \\(\\(?:move/\\)?add\\|branch\\|\\(?:move/\\)?delete\\|edit\\|integrate\\) ")
-                     (p4-update-mode b (intern (match-string 2))
-                                     (string-to-number (match-string 1))))
-                    ((looking-at "^error: .* - file(s) not opened on this client")
-                     (push b have-buffers)
-                     (setq processed nil))
-                    (t (setq processed nil
-                             unrecognized-output t)))
-              (when processed
-                (setf (cl-third p4-process-pending)
-                      (remove b (cl-third p4-process-pending)))))
+            (unless (looking-at "^exit: [01]\r?$")
+              (let ((b (pop p4-process-buffers))
+                    (processed t))
+                (cond ((looking-at "^info: //[^#\n]+#\\([1-9][0-9]*\\) - \\(\\(?:move/\\)?add\\|branch\\|\\(?:move/\\)?delete\\|edit\\|integrate\\) ")
+                       (p4-update-mode b (intern (match-string 2))
+                                       (string-to-number (match-string 1))))
+                      ((looking-at "^\\(?:error\\|warning\\): .* - file(s) not opened on this client")
+                       (push b have-buffers)
+                       (setq processed nil))
+                      (t (setq processed nil
+                               unrecognized-output t)))
+                (when processed
+                  (setf (cl-third p4-process-pending)
+                        (remove b (cl-third p4-process-pending))))))
             (forward-line 1))
           (when unrecognized-output
             (message "P4 background status could not determine file status: %s"

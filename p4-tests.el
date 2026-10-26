@@ -242,6 +242,77 @@ COMMANDS records arguments and filename lists; PROCESSES records children."
         (kill-buffer edited)
         (kill-buffer synced)))))
 
+(ert-deftest p4-test-status-unopened-and-untracked-files-are-quiet ()
+  (dolist (response '(("warning" 0) ("error" 1)))
+    (let ((prefix (car response))
+          (exit-status (cadr response))
+          messages)
+      (p4-tests--with-status-client
+          `(("opened" . ,(format
+                          "(progn (princ %S) (kill-emacs %d))"
+                          (format
+                           "%s: synced.txt - file(s) not opened on this client.\n%s: untracked.json - file(s) not opened on this client.\nexit: %d\n"
+                           prefix prefix exit-status)
+                          exit-status))
+            ("have" . ,(format
+                        "(progn (princ %S) (kill-emacs %d))"
+                        (format
+                         "%s: untracked.json - file(s) not on client.\ninfo: //depot/synced.txt#7 - synced.txt\nexit: %d\n"
+                         prefix exit-status)
+                        exit-status)))
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format-string &rest args)
+                     (push (apply #'format format-string args) messages))))
+          (with-temp-buffer
+            (setq buffer-file-name (expand-file-name "synced.txt"))
+            (let ((synced (current-buffer)))
+              (with-temp-buffer
+                (setq buffer-file-name (expand-file-name "untracked.json"))
+                (p4-update-mode (current-buffer) 'edit 1)
+                (setq p4-update-status-pending-alist
+                      (list (list "" (seconds-to-time 0)
+                                  (list synced (current-buffer)))))
+                (p4-maybe-start-update-statuses)
+                (p4-tests--wait-for
+                 (lambda () (not p4-update-status-pending-alist)))
+                (should (eq (buffer-local-value 'p4-vc-status synced) 'sync))
+                (should (= (buffer-local-value 'p4-vc-revision synced) 7))
+                (should-not p4-vc-status)
+                (should-not p4-vc-revision)
+                (should-not p4-mode)
+                (should (= (length commands) 2))
+                (should (equal (cdr (car commands))
+                               (concat buffer-file-name "\n"
+                                       (buffer-file-name synced) "\n")))
+                (should-not messages)))))))))
+
+(ert-deftest p4-test-status-unexpected-warnings-remain-visible ()
+  (dolist (command '("opened" "have"))
+    (let (messages)
+      (p4-tests--with-status-client
+          `(("opened" . ,(if (equal command "opened")
+                            "(progn (princ \"warning: Perforce password invalid or unset.\\nexit: 1\\n\") (kill-emacs 1))"
+                          "(princ \"warning: test.txt - file(s) not opened on this client.\\nexit: 0\\n\")"))
+            ("have" . "(progn (princ \"warning: Perforce password invalid or unset.\\nexit: 1\\n\") (kill-emacs 1))"))
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format-string &rest args)
+                     (push (apply #'format format-string args) messages))))
+          (with-temp-buffer
+            (setq buffer-file-name (expand-file-name "test.txt"))
+            (setq p4-update-status-pending-alist
+                  (list (list "" (seconds-to-time 0) (list (current-buffer)))))
+            (p4-maybe-start-update-statuses)
+            (p4-tests--wait-for
+             (lambda () (not (get-buffer p4-update-status-process-buffer))))
+            (should (equal (car (last (caar commands))) command))
+            (should (equal (cl-third (car p4-update-status-pending-alist))
+                           (list (current-buffer))))
+            (should (cl-some
+                     (lambda (text)
+                       (string-match-p
+                        "P4 background status .*Perforce password" text))
+                     messages))))))))
+
 (ert-deftest p4-test-status-hung-queries-keep-delayed-retries ()
   (dolist (command '("opened" "have"))
     (p4-tests--with-status-client
