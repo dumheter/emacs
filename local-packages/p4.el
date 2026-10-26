@@ -1335,6 +1335,10 @@ updating.")
               (string-match "^P4CHARSET=\\([^ \r\n]+\\)" settings))
      (match-string 1 settings))))
 
+(defun p4--status-settings-have-client-p (settings)
+  "Return non-nil if SETTINGS from `p4 set' name a Perforce client."
+  (string-match-p "^P4CLIENT=[^ \r\n]" settings))
+
 (defun p4--status-process-timeout (process)
   "Terminate an unresponsive background status PROCESS."
   (when (process-live-p process)
@@ -1624,11 +1628,14 @@ for the current Perforce settings."
                                      (when (and p4-do-find-file
                                                 (equal file buffer-file-name)
                                                 (not (p4--status-process-failed-p process)))
-                                       (p4-update-status-pending-add
-                                        (with-current-buffer output
-                                          (buffer-string))
-                                        b force)
-                                       (p4-maybe-start-update-statuses)))))
+                                       (let ((settings (with-current-buffer output
+                                                         (buffer-string))))
+                                         ;; Files outside any workspace have no
+                                         ;; client and would query a default port.
+                                         (when (p4--status-settings-have-client-p settings)
+                                           (p4-update-status-pending-add
+                                            settings b force)
+                                           (p4-maybe-start-update-statuses)))))))
                              (when (buffer-live-p output)
                                (kill-buffer output))))))))
             (error

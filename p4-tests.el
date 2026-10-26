@@ -149,7 +149,7 @@ COMMANDS records arguments and filename lists; PROCESSES records children."
 
 (ert-deftest p4-test-status-settings-are-asynchronous ()
   (p4-tests--with-status-client
-      '(("set" . "(princ \"P4PORT=test:1666\\nP4CHARSET=utf8 (set)\\n\")")
+      '(("set" . "(princ \"P4CLIENT=test-client (config 'test')\\nP4PORT=test:1666\\nP4CHARSET=utf8 (set)\\n\")")
         ("opened" . "(princ \"info: //depot/test.txt#3 - edit change 42 (text)\\n\")"))
     (with-temp-buffer
       (setq buffer-file-name (expand-file-name "test.txt"))
@@ -166,6 +166,23 @@ COMMANDS records arguments and filename lists; PROCESSES records children."
       (should (equal (cdr (car commands))
                      (concat buffer-file-name "\n")))
       (should-not (file-exists-p (nth 2 (caar commands)))))))
+
+(ert-deftest p4-test-status-without-client-is-skipped ()
+  (let (messages)
+    (p4-tests--with-status-client
+        '(("set" . "(princ \"P4CONFIG=.p4config (config 'noconfig')\\nP4PORT=perforce:1666 (set)\\n\")"))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (push (apply #'format format-string args) messages))))
+        (with-temp-buffer
+          (setq buffer-file-name (expand-file-name "outside-workspace.log"))
+          (p4-update-status)
+          (p4-tests--wait-for (lambda () (not p4--status-settings-process)))
+          (should-not p4-update-status-pending-alist)
+          (should-not p4-vc-status)
+          (should-not p4-mode)
+          (should (= (length commands) 1))
+          (should-not messages))))))
 
 (ert-deftest p4-test-status-hung-settings-do-not-block ()
   (p4-tests--with-status-client '(("set" . "(sleep-for 60)"))
