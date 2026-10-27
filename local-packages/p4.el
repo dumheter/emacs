@@ -2730,14 +2730,18 @@ the mouse over the link."
                 (filename (p4-file-revision-filename rev))
                 (revision (p4-file-revision-revision rev))
                 (user (p4-file-revision-user rev)))
-            (p4-link 7 (format "%d" change) `(change ,change) "Describe change")
+            (p4-link 8 (format "%d" change) `(change ,change) "Describe change")
             (insert " ")
-            (p4-link 5 (format "#%d" revision)
-                     `(rev ,revision link-depot-name ,filename)
-                     "Print revision")
+            (if (and revision filename)
+                (p4-link 5 (format "#%d" revision)
+                         `(rev ,revision link-depot-name ,filename)
+                         "Print revision")
+              (insert (make-string 5 ?\s)))
             (insert " ")
-            (insert (format "%10s " (p4-file-revision-date rev)))
-            (p4-link 8 user `(user ,user) "Describe user")
+            (insert (format "%10s " (or (p4-file-revision-date rev) "")))
+            (if user
+                (p4-link 8 user `(user ,user) "Describe user")
+              (insert (make-string 8 ?\s)))
             (insert ": "))
           (setf (p4-file-revision-links rev)
                 (buffer-substring (point-min) (point-max)))))))
@@ -2745,11 +2749,11 @@ the mouse over the link."
 (defun p4-file-revision-annotate-desc (rev)
   (let ((links (p4-file-revision-desc rev)))
     (or links
-        (let ((desc (p4-file-revision-description rev)))
+        (let ((desc (or (p4-file-revision-description rev) "")))
           (setf (p4-file-revision-desc rev)
-                (if (<= (length desc) 33)
-                    (format "%-33s: " desc)
-                  (format "%33s: " (substring desc 0 33))))))))
+                (if (<= (length desc) 34)
+                    (format "%-34s: " desc)
+                  (format "%34s: " (substring desc 0 34))))))))
 
 (defun p4-parse-filelog (filespec)
   "Parse the filelog for FILESPEC.
@@ -2784,6 +2788,65 @@ first)."
                    (setq head-seen t)))))
         (forward-line))
       change-alist)))
+
+(defun p4-describe-missing-changes (changes change-alist)
+  "Return `p4-file-revision' entries for CHANGES absent from CHANGE-ALIST.
+`p4 annotate -i' follows integrations into other branches, so it can
+report changes that `p4 filelog -i' does not list.  Look these up with
+`p4 describe' and return an alist mapping change to revision.  When the
+change touches a file whose name matches a file in CHANGE-ALIST, use it
+for the revision link."
+  (let* ((missing (cl-remove-duplicates
+                   (cl-remove-if (lambda (c) (assoc c change-alist)) changes)))
+         (basenames (delete-dups
+                     (mapcar (lambda (entry)
+                               (file-name-nondirectory
+                                (p4-file-revision-filename (cdr entry))))
+                             change-alist)))
+         result)
+    (when missing
+      (let ((args (append (list "describe" "-s")
+                          (mapcar #'number-to-string missing))))
+        (message "Running p4 %s..." (p4-join-list args))
+        (p4-with-temp-buffer args
+          (while (re-search-forward
+                  (concat "^Change \\([0-9]+\\) by \\([^@\n]+\\)@[^ \n]*"
+                          " on \\([^ \n]+\\).*\n\n\t\\(.*\\)")
+                  nil t)
+            (let* ((change (string-to-number (match-string 1)))
+                   (user (match-string 2))
+                   (date (match-string 3))
+                   (description (match-string 4))
+                   (end (save-excursion
+                          (if (re-search-forward "^Change [0-9]+ by " nil t)
+                              (match-beginning 0)
+                            (point-max))))
+                   filename revision)
+              (while (and (not filename)
+                          (re-search-forward
+                           "^\\.\\.\\. \\(//[^#\n]+\\)#\\([0-9]+\\) \\([^ \n]+\\)"
+                           end t))
+                (when (and (not (string-match-p "delete" (match-string 3)))
+                           (member (file-name-nondirectory (match-string 1))
+                                   basenames))
+                  (setq filename (match-string 1)
+                        revision (string-to-number (match-string 2)))))
+              (goto-char end)
+              (push (cons change
+                          (make-p4-file-revision
+                           :filespec (and filename
+                                          (format "%s#%d" filename revision))
+                           :filename filename
+                           :revision revision
+                           :change change
+                           :date date
+                           :user user
+                           :description description))
+                    result))))))
+    (dolist (change missing)
+      (unless (assoc change result)
+        (push (cons change (make-p4-file-revision :change change)) result)))
+    result))
 
 (defun p4-annotate-changes (filespec)
   "Return a list of change numbers, one for each line of FILESPEC."
@@ -2854,6 +2917,10 @@ only be used when p4 annotate is unavailable."
                   (if (< (p4-server-version) 2004)
                       (p4-annotate-changes-by-patching filespec file-change-alist)
                     (p4-annotate-changes filespec)))
+                 (file-change-alist
+                  (append file-change-alist
+                          (p4-describe-missing-changes line-changes
+                                                       file-change-alist)))
                  (lines (length line-changes))
                  (inhibit-read-only t)
                  (inhibit-modification-hooks t)
@@ -2877,7 +2944,7 @@ only be used when p4 annotate is unavailable."
                 (cl-case current-repeats
                   (0 (insert (p4-file-revision-annotate-links rev)))
                   (1 (insert (p4-file-revision-annotate-desc rev)))
-                  (t (insert (format "%33s: " "")))))
+                  (t (insert (format "%34s: " "")))))
               (setq current-change change)
               (forward-line))
             (goto-char (point-min))
